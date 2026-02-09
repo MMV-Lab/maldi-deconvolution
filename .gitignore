@@ -11,6 +11,8 @@ wheels/
 data/
 output/
 
+__marimo__
+
 docs/
 
 .ruff_cache

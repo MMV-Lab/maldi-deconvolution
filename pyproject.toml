@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "bioio>=3.1.0",
+    "datashader>=0.18.2",
     "hvplot>=0.12.2",
     "imagecodecs>=2025.11.11",
     "jupyter>=1.1.1",
@@ -17,10 +18,19 @@ dependencies = [
     "polars>=1.37.1",
     "pyimzml>=1.5.5",
     "pyzmq>=27.1.0",
-    "ruff>=0.14.8",
     "scikit-image>=0.25.2",
     "scipy>=1.16.3",
     "tifffile>=2025.10.16",
-    "ty>=0.0.14",
     "xarray>=2025.12.0",
 ]
+
+[dependency-groups]
+dev = [
+    "python-lsp-server>=1.14.0",
+    "ruff>=0.14.14",
+    "ty>=0.0.14",
+    "websockets>=16.0",
+]
+
+[tool.marimo.runtime]
+output_max_bytes = 30_000_000
