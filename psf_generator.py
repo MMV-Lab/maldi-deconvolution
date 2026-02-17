@@ -78,7 +78,6 @@ class MaldiPSFGenerator:
     fov_span: Optional[float] = None
     padding: Optional[float] = None
     meshgrid_span: Optional[float] = None
-
     def __post_init__(self):
         self.w0 = self.laser_diameter_um / 2.0  # 1/e^2 radius
         self.compute_psf()
@@ -404,6 +403,22 @@ class MaldiPSFGenerator:
                     ds = ds.assign_coords({"pass_idx_fit": x_fit})
                     ds.pass_idx_fit.attrs["long_name"] = "Number of Passes"
                     # ds.pass_idx_fit.attrs["units"] = "count"
+
+        ds.attrs.update(
+            {
+                "laser_diameter_um": self.laser_diameter_um,
+                "step_size_um": self.step_size_um,
+                "kernel_size": self.kernel_size,
+                
+                "sim_method": self.method,
+                "sim_res_um": self.sim_res_um,
+                "scan_direction": self.scan_direction,
+                "decay_model": self.decay_model,
+                "decay_fit_results": self.decay_fit_results,
+                "decay_factors": self.decay_factors,
+            }
+        )
+
 
         return ds
 

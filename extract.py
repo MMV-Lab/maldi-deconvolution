@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.19.7"
+__generated_with = "0.19.4"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -13,12 +13,15 @@ with app.setup:
     import warnings
     import polars as pl
     import tifffile
+    import datetime
 
 
 @app.cell
 def _():
     mo.md(r"""
-    # Select File
+    # Welcome!
+
+    ## This notebook serves the purpose of extracting data from a `imzML` file to a `h5` file which can be processed later (deconvolution or visualization)
     """)
     return
 
@@ -26,7 +29,7 @@ def _():
 @app.cell
 def _():
     widget_selected_file = mo.ui.file_browser(filetypes=[".imzml"], multiple=False)
-    mo.vstack([widget_selected_file])
+    mo.vstack([mo.md("# Select `imzml` file"), widget_selected_file])
     return (widget_selected_file,)
 
 
@@ -41,12 +44,24 @@ def _(widget_selected_file):
             imzml_file = ImzMLParser(filepath)
         mo.output.append(
             mo.md(
-                f"""Correctly loaded `{filepath.stem}` from 
+                f"""Correctly loaded `{filepath}` from 
 
             `{filepath.parent}` """
             ).callout(kind="success")
         )
     return filepath, imzml_file
+
+
+@app.cell
+def _():
+    # imzml_file.imzmldict
+    return
+
+
+@app.cell
+def _():
+    # imzml_file.metadata.pretty()
+    return
 
 
 @app.cell
@@ -65,24 +80,10 @@ def _(imzml_file):
 
     pixel_size_x = float(pixel_size_x)
     pixel_size_y = float(pixel_size_y)
-    return pixel_size_x, pixel_size_y
 
-
-@app.cell
-def _():
-    # imzml_file.imzmldict
-    return
-
-
-@app.cell
-def _():
-    # imzml_file.metadata.pretty()
-    return
-
-
-@app.cell
-def _(imzml_file):
-    mo.stop(not imzml_file)
+    print(f"\n\n--- Pixel Size ---")
+    print(f"x: {pixel_size_x}")
+    print(f"y: {pixel_size_y}")
 
     min_mz_global = float("inf")
     max_mz_global = float("-inf")
@@ -113,7 +114,35 @@ def _(imzml_file):
     max_mz_global = int(round(max_mz_global))
     print(f"Global Min m/z: {min_mz_global}")
     print(f"Global Max m/z: {max_mz_global}")
-    return max_mz_global, min_mz_global
+
+
+    mo.vstack(
+        [
+            mo.md(
+                f"""
+            Please ***check*** the extracted parameters:  
+        """
+            ),
+            mo.md(
+                f"""
+            | Parameter | Value |
+            | ---: | :--- |
+            | $x$ pixel size: | ${pixel_size_x} \\ μm$  |
+            | $y$ pixel size: | ${pixel_size_y} \\ μm$  |
+            | min m/z: | {min_mz_global} |
+            | max m/z: | {max_mz_global} |   
+        """
+            ).center(),
+        ],
+        align="center",
+        justify="center",
+    ).callout(kind="warn")
+    return max_mz_global, min_mz_global, pixel_size_x, pixel_size_y
+
+
+@app.cell
+def _():
+    return
 
 
 @app.cell
@@ -172,6 +201,8 @@ def _(max_mz_global, min_mz_global):
 
 @app.cell
 def _(widget_csv_upload):
+    mz_list_from_csv = None
+
     if len(widget_csv_upload.value) == 1:
         try:
             _df = pl.read_csv(
@@ -182,7 +213,9 @@ def _(widget_csv_upload):
             mz_list_from_csv = _df["m_z"].cast(pl.Float64).to_list()
 
         except Exception as e:
-            mo.output.append(mo.md(f"Error reading CSV: `{e}`").callout(kind="danger"))
+            mo.output.append(
+                mo.md(f"Error reading CSV: `{e}`").callout(kind="danger")
+            )
             mz_list_from_csv = None
     return (mz_list_from_csv,)
 
@@ -236,7 +269,9 @@ def _(imzml_file, m_z_values, tolerance):
 
     ion_image_stack = np.zeros((n_targets, max_x, max_y), dtype=np.float32)
 
-    with mo.status.spinner(title="Loading...") as _spinner:
+    with mo.status.spinner(
+        title="Loading...", subtitle="This will take 1-2 minutes"
+    ) as _spinner:
         for idx, (x, y, z) in enumerate(imzml_file.coordinates):
             x_pos, y_pos = x - 1, y - 1  # imzML coordinates are 1-based,
 
@@ -254,6 +289,7 @@ def _(imzml_file, m_z_values, tolerance):
 
 @app.cell
 def _(
+    filepath,
     ion_image_stack,
     m_z_values,
     max_x,
@@ -277,12 +313,23 @@ def _(
             "tolerance": tolerance,
             "pixel_size_x": pixel_size_x,
             "pixel_size_y": pixel_size_y,
+            "original_file_name": filepath.name,
         },
         name="ion_intensity",
     )
 
+    ion_image_xr.x.attrs["units"] = "μm"
+    ion_image_xr.y.attrs["units"] = "μm"
+    ion_image_xr.m_z.attrs["long_name"] = "m/z"
+
+    ion_image_xr.attrs["long_name"] = "Ion Intensity"
+    ion_image_xr.attrs["units"] = "a.u."
+
+
+    show_export_button = True
+
     mo.md("# Preview")
-    return (ion_image_xr,)
+    return ion_image_xr, show_export_button
 
 
 @app.cell
@@ -295,11 +342,11 @@ def _(ion_image_xr):
         robust=True,
         cmap="viridis",
         frame_height=500,
-    ).opts(invert_yaxis=True)
+    ).opts(toolbar=None)
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(ion_image_xr):
     _normalized = ion_image_xr / ion_image_xr.sum(dim=["x", "y"])
 
@@ -311,7 +358,7 @@ def _(ion_image_xr):
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(ion_image_xr):
     tmp = ion_image_xr.median(dim=["x", "y"]) / ion_image_xr.mean(dim=["x", "y"])
 
@@ -320,14 +367,14 @@ def _(ion_image_xr):
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(ion_image_xr):
     _tmp = ion_image_xr.std(dim=["x", "y"])
     _tmp
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(ion_image_xr):
     _tmp = ion_image_xr.std(dim=["x", "y"])
 
@@ -353,7 +400,7 @@ def _(ion_image_xr):
     return
 
 
-@app.cell
+@app.cell(disabled=True)
 def _(ion_image_xr):
     # _mask = _normalized.max(dim=["x", "y"]) > 1e-6
 
@@ -379,56 +426,57 @@ def _(ion_image_xr):
 
 
 @app.cell
-def _():
-    button_save_tiffs = mo.ui.run_button(label="Export TIFFs")
+def _(show_export_button):
+    export_button = mo.ui.run_button(label="Export")
 
-    mo.stop("ion_image_xr" not in globals())
-    mo.vstack(
-        [mo.md("### Press the following button to export all"), button_save_tiffs]
-    )
-    return (button_save_tiffs,)
+    mo.stop(not show_export_button)
+    mo.vstack([mo.md("### Press the following button to save"), export_button])
+    return (export_button,)
 
 
 @app.cell
-def _(
-    button_save_tiffs,
-    filepath,
-    ion_image_xr,
-    pixel_size_x,
-    pixel_size_y,
-    tolerance,
-):
-    mo.stop(not button_save_tiffs.value)
+def _(export_button, filepath, ion_image_xr):
+    mo.stop(not export_button.value)
 
-    out_dir = filepath.parent / "extracted_tiffs"
+    out_dir = filepath.parent / (
+        "original_" + datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    )
     out_dir.mkdir(exist_ok=True, parents=True)
 
-    # 1cm = 1e4 um
-    tiff_resolution_x = 1e4 / pixel_size_x
-    tiff_resolution_y = 1e4 / pixel_size_y
 
-    with mo.status.spinner(title="Exporting...") as _spinner:
-        for mz in ion_image_xr.m_z.values:
-            img_slice = ion_image_xr.sel(m_z=mz).values
+    # out_dir = filepath.parent / "extracted_tiffs"
+    # out_dir.mkdir(exist_ok=True, parents=True)
 
-            fname = f"{filepath.name}_mz_{mz:.4f}±{tolerance}.tiff"
-            save_full_path = out_dir / fname
+    # # 1cm = 1e4 um
+    # tiff_resolution_x = 1e4 / pixel_size_x
+    # tiff_resolution_y = 1e4 / pixel_size_y
 
-            tifffile.imwrite(
-                save_full_path,
-                img_slice,
-                imagej=True,
-                compression="zlib",
-                photometric="minisblack",
-                resolution=(1 / pixel_size_x, 1 / pixel_size_y),
-                metadata={
-                    "axes": "YX",
-                    "unit": "um",
-                    "Ranges": np.nanpercentile(img_slice, [0, 99]).tolist(),
-                },
-            )
+    # with mo.status.spinner(title="Exporting...") as _spinner:
+    #     for mz in ion_image_xr.m_z.values:
+    #         img_slice = ion_image_xr.sel(m_z=mz).values
 
-    mo.md(f"""All TIFF files are generated in
+    #         fname = f"{filepath.name}_mz_{mz:.4f}±{tolerance}.tiff"
+    #         save_full_path = out_dir / fname
+
+    #         tifffile.imwrite(
+    #             save_full_path,
+    #             img_slice,
+    #             imagej=True,
+    #             compression="zlib",
+    #             photometric="minisblack",
+    #             resolution=(1 / pixel_size_x, 1 / pixel_size_y),
+    #             metadata={
+    #                 "axes": "YX",
+    #                 "unit": "um",
+    #                 # "Ranges": np.nanpercentile(img_slice, [0, 99]).tolist(),
+    #             },
+    #         )
+    with mo.status.spinner(
+        title="Saving...", subtitle="This should take 1-2 minutes"
+    ) as _spinner:
+        ion_image_xr.to_netcdf(out_dir / f"{filepath.name}_original.h5")
+
+    mo.md(f"""Saved original `{filepath.name}_original.h5` to:
 
     `{out_dir}`
 

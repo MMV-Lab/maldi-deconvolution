@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.19.8"
+__generated_with = "0.19.4"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -12,6 +12,11 @@ with app.setup:
     import hvplot.xarray
     import matplotlib.pyplot as plt
     import numpy as np
+    import xarray as xr
+    from datashader.transfer_functions import shade
+    from matplotlib import cm
+
+    import datetime, json
 
     import os
     import tifffile
@@ -21,15 +26,7 @@ with app.setup:
     from typing import Union, Tuple, Optional
 
     from psf_generator import MaldiPSFGenerator
-
-    # hvplot.extension("matplotlib")
-
-
-@app.cell
-def _():
-    INPUT_DIR = "/mnt/eternus/users/Davide/maldi-deconv-rl/data/Sven_Chiahsin_Deconvolution_Oversampling_MALDI/Oversampled_U2OS-FUCCI-Cell/CC257_U2OS_1.3 µm"
-    OUTPUT_DIR = "/mnt/eternus/users/Davide/maldi-deconv-rl/output/tmp"
-    return
+    from visualize import export_xarray_to_tiff
 
 
 @app.function
@@ -238,9 +235,19 @@ def validate_setup_params(values):
 
 @app.cell
 def _():
+    mo.md(r"""
+    # Welcome!
+
+    ## This notebook serves the purpose of simulating the beam profile and performing deconvolution.
+    """)
+    return
+
+
+@app.cell
+def _():
     parameters_form = (
         mo.md("""
-        # Input the Setup Parameters
+        ## please insert the setup parameters below:
 
         | Parameter | Value |
         | ---: | :--- |
@@ -309,18 +316,24 @@ def _(parameters_form):
             method=parameters_form.value["sim_method"],
             sim_res_um=0.01,
         )
-        ds = maldi_psf.to_xarray(fov_only=True)
-    return ds, maldi_psf
+        maldi_psf_ds = maldi_psf.to_xarray(fov_only=False)
+    return (maldi_psf_ds,)
 
 
 @app.cell
-def _(ds):
-    decay_plot = ds.decay_measured.hvplot.scatter(
+def _(maldi_psf_ds):
+    maldi_psf_ds
+    return
+
+
+@app.cell
+def _(maldi_psf_ds):
+    decay_plot = maldi_psf_ds.decay_measured.hvplot.scatter(
         x="pass_idx", label="Measured", color="black", size=50
     )
 
-    if "decay_fit" in ds:
-        fit_line = ds.decay_fit.hvplot.line(
+    if "decay_fit" in maldi_psf_ds:
+        fit_line = maldi_psf_ds.decay_fit.hvplot.line(
             x="pass_idx_fit", color="red", label="Fit", line_width=2
         )
         decay_plot = decay_plot * fit_line
@@ -336,18 +349,7 @@ def _(ds):
 
 
 @app.cell
-def _():
-    # import matplotlib_inline
-
-    # matplotlib_inline.backend_inline.set_matplotlib_formats("svg")
-    # plt.imshow(maldi_psf.decay_map, norm="linear")
-    # plt.colorbar()
-    # plt.show()
-    return
-
-
-@app.cell
-def _(ds):
+def _(maldi_psf_ds):
     _plot_configs = {
         "spatial_profile": ("1. Beam Spatial Profile", "Blues"),
         "dose_map": ("2. Accumulated Dose", "Oranges"),
@@ -358,7 +360,7 @@ def _(ds):
     _plots = []
 
     for _var, (_title, _cmap) in _plot_configs.items():
-        _tmp = ds[_var].hvplot.image(
+        _tmp = maldi_psf_ds[_var].hvplot.image(
             title=_title,
             cmap=_cmap,
             aspect="square",
@@ -380,13 +382,7 @@ def _(ds):
 
 
 @app.cell
-def _(maldi_psf):
-    maldi_psf.step_size_um
-    return
-
-
-@app.cell
-def _(ds):
+def _(maldi_psf_ds):
     _plot_configs = {
         "spatial_kernel": ("A. Spatial Component", "Blues"),
         "pass_map": ("B. Exposure (Pass Map)", "Oranges"),
@@ -396,7 +392,7 @@ def _(ds):
     _plots = []
 
     for _var, (_title, _cmap) in _plot_configs.items():
-        da = ds[_var].rename("val")
+        da = maldi_psf_ds[_var].rename("val")
 
         _img = da.hvplot.image(
             x="x_kernel",
@@ -425,11 +421,11 @@ def _(ds):
 @app.cell
 def _():
     widget_selected_dir = mo.ui.file_browser(
-        multiple=False, selection_mode="directory"
+        multiple=False, selection_mode="file", filetypes=[".h5"]
     )
     mo.vstack(
         [
-            mo.md("# Select the folder ofinput data"),
+            mo.md("# Select the h5 file cointaing the original data:"),
             widget_selected_dir,
         ]
     )
@@ -438,99 +434,172 @@ def _():
 
 @app.cell
 def _(widget_selected_dir):
-    input_dir = None
+    input = None
     if len(widget_selected_dir.value) == 1:
-        input_dir = Path(widget_selected_dir.value[0].path)
-        output_dir = input_dir.parent / "deconvolved_tiffs"
-        output_dir.mkdir(exist_ok=True, parents=True)
-        # print(input_dir)
-        # print(output_dir)
+        input = Path(widget_selected_dir.value[0].path)
         mo.output.append(
             mo.md(
-                f"""The initial data will be taken from this folder:
-
-                `{input_dir}` 
-            
-                While the output data will be saved here:
-
-                `{output_dir}` 
-            
-                """
+                "Found!"
+                # f"""The initial data will be taken from this folder:
+                # `{input_dir}`
+                # While the output data will be saved here:
+                # `{out_dir}`
+                # """
             ).callout(kind="success")
         )
-    return input_dir, output_dir
+
+        original_xr = xr.open_dataarray(input)
+        original_xr = original_xr.chunk({"m_z": 1, "y": -1, "x": -1})
+    return input, original_xr
 
 
 @app.cell
-def _():
-    # ds.final_signal_kernel.plot.imshow()
+def _(original_xr):
+    original_xr
     return
 
 
 @app.cell
-def _(ds):
-    ds.final_signal_kernel.values
-    return
+def _(maldi_psf_ds, original_xr):
+    def perform_batch_deconvolution(img_batch, kernel, num_iterations):
+        """
+        Operates on a chunk of data.
+        Input shape:  (batch, y, x)  <- corresponds to a chunk of m_z
+        Output shape: (batch, iteration, y, x)
+        """
+        # 1. Prepare output array
+        # Shape: (batch_size, num_iterations + 1, y, x)
+        batch_size, h, w = img_batch.shape
+        out_shape = (batch_size, num_iterations + 1, h, w)
+        output = np.zeros(out_shape, dtype=np.float32)
+
+        # 2. Iterate over the batch (the m_z chunk)
+        # We loop manually here, which is often faster/safer than np.vectorize
+        for i in range(batch_size):
+            img_2d = img_batch[i].astype(np.float32)
+
+            # Normalize
+            max_val = np.max(img_2d)
+            if max_val > 0:
+                img_2d /= max_val
+
+            # Store Iteration 0 (Original)
+            estimate = img_2d.copy()
+            output[i, 0, :, :] = estimate
+
+            # Deconvolution Loop
+            for iter_idx in range(1, num_iterations + 1):
+                estimate = richardson_lucy(estimate, kernel, num_iter=1)
+                output[i, iter_idx, :, :] = estimate.astype(np.float32)
+
+        return output
 
 
-@app.cell
-def _(ds, input_dir, maldi_psf, output_dir):
-    mo.stop(not input_dir)
+    def deconvolute_dataset(input_xarray, kernel, num_iterations=10):
 
-    file_patterns = ["*.tif", "*.tiff"]
-    num_iterations = 10
+        # 1. Coordinate setup
+        iter_coords = np.arange(num_iterations + 1)
 
-    tif_files = []
-    for pattern in file_patterns:
-        tif_files.extend(input_dir.glob(pattern))
-
-    for f in mo.status.progress_bar(tif_files):
-        with tifffile.TiffFile(f) as tif:
-            if not np.isclose(
-                tif.pages[0].tags["XResolution"].value[0]
-                / tif.pages[0].tags["XResolution"].value[1],
-                1 / maldi_psf.step_size_um,
-            ):
-                break
-
-        img = tifffile.imread(f)
-
-        img = img.astype(np.float32)
-        img = img / np.max(img) if np.max(img) > 0 else img
-
-        iterations_stack = [img]
-        estimate = img.copy()
-
-        for iteration in range(1, num_iterations + 1):
-            estimate = richardson_lucy(
-                estimate, ds.final_signal_kernel.values, num_iter=1
-            )
-            iterations_stack.append(estimate.astype(np.float32))
-
-        fname = f"{f.stem}_deconvolved.tiff"
-        save_full_path = output_dir / fname
-
-        tifffile.imwrite(
-            save_full_path,
-            np.array(iterations_stack),
-            imagej=True,
-            compression="zlib",
-            photometric="minisblack",
-            resolution=(1 / maldi_psf.step_size_um, 1 / maldi_psf.step_size_um),
-            metadata={
-                "axes": "TYX",
-                "unit": "um",
-            },
+        # 2. Apply Ufunc
+        # We allow the function to handle the 'm_z' chunking manually by setting vectorize=False
+        deconvolved_da = xr.apply_ufunc(
+            perform_batch_deconvolution,
+            input_xarray,
+            kwargs={"kernel": kernel, "num_iterations": num_iterations},
+            # Core dims are what the function manipulates strictly.
+            # Xarray broadcasts over others (m_z), passing them as chunks to the function.
+            input_core_dims=[["y", "x"]],
+            output_core_dims=[["iteration", "y", "x"]],
+            # KEY CHANGES:
+            vectorize=False,  # We handle the batch loop manually for speed
+            dask="parallelized",  # Map across Dask chunks
+            output_dtypes=[np.float32],
+            dask_gufunc_kwargs={"output_sizes": {"iteration": len(iter_coords)}},
         )
+
+        # 3. Add coords and return
+        deconvolved_da = deconvolved_da.assign_coords(iteration=iter_coords)
+
+        deconvolved_da.name = "deconvolved_ion_intensity"
+        deconvolved_da.attrs["long_name"] = "Ion Intensity"
+        deconvolved_da.attrs["units"] = "a.u."
+        return deconvolved_da
+
+
+    # --- EXECUTION ---
+
+    # 1. Chunking is MANDATORY for dask='parallelized' to work
+    # Chunk 'm_z' (the batch dim), but keep 'y' and 'x' intact (-1) for FFT/Convolution
+
+
+    # 2. Run Lazy
+    result_xr = deconvolute_dataset(
+        original_xr,
+        kernel=maldi_psf_ds.final_signal_kernel.values,
+        num_iterations=10,
+    )
+
+    show_export_button = True
+    return result_xr, show_export_button
+
+
+@app.cell
+def _(result_xr):
+    result_xr
+    return
+
+
+@app.cell
+def _(show_export_button):
+    mo.stop(not show_export_button)
+
+    export_button = mo.ui.run_button(label="Export")
+
+    mo.vstack(
+        [
+            mo.md(
+                "### Press the following button to save the deconvolved results"
+            ),
+            export_button,
+        ]
+    )
+    return (export_button,)
+
+
+@app.cell
+def _(export_button, input, maldi_psf_ds, result_xr):
+    mo.stop(not export_button.value)
+
+    with mo.status.spinner(
+        title="Saving...", subtitle="This should take 1-2 minutes"
+    ) as _spinner:
+        out_dir = input.parent.parent / (
+            "deconvolved_" + datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        )
+        out_dir.mkdir(exist_ok=True, parents=True)
+
+        maldi_psf_ds.attrs["decay_fit_results"] = json.dumps(
+            maldi_psf_ds.attrs["decay_fit_results"]
+        )
+        maldi_psf_ds.to_netcdf(
+            out_dir
+            / f"{result_xr.attrs['original_file_name']}_simulation_data.h5",
+        )
+
+        result_xr.to_netcdf(
+            out_dir / f"{result_xr.attrs['original_file_name']}_deconvolved.h5",
+        )
+
+    # export_xarray_to_tiff(result_xr, out_dir)
 
     mo.output.append(
         mo.md(f"""
             Congratulations! 🎉
-        
-            All your `{len(tif_files)} files` are saved in:
 
-            `{output_dir}`
-    
+            All your files are saved in:
+
+            `{out_dir}`
+
         """).callout(kind="success")
     )
     return

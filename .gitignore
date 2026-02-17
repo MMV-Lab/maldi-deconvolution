@@ -9,6 +9,7 @@ wheels/
 # Virtual environments
 .venv
 data/
+old_output/
 output/
 
 __marimo__
