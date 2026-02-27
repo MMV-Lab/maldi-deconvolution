@@ -144,11 +144,11 @@ def load_decay_profile(
 
         # 2. Check if the maximum is in the first row
         # (We use a small tolerance or simple comparison)
-        if first_row_intensity < max_intensity:
-            return (
-                None,
-                "Validation Error: The maximum intensity must be in the first row (initial pass).",
-            )
+        # if first_row_intensity < max_intensity:
+        #     return (
+        #         None,
+        #         "Validation Error: The maximum intensity must be in the first row (initial pass).",
+        #     )
 
         # 3. Normalize the intensity column
         df = df.with_columns(
@@ -322,12 +322,6 @@ def _(parameters_form):
 
 @app.cell
 def _(maldi_psf_ds):
-    maldi_psf_ds
-    return
-
-
-@app.cell
-def _(maldi_psf_ds):
     decay_plot = maldi_psf_ds.decay_measured.hvplot.scatter(
         x="pass_idx", label="Measured", color="black", size=50
     )
@@ -454,12 +448,6 @@ def _(widget_selected_dir):
 
 
 @app.cell
-def _(original_xr):
-    original_xr
-    return
-
-
-@app.cell
 def _(maldi_psf_ds, original_xr):
     def perform_batch_deconvolution(img_batch, kernel, num_iterations):
         """
@@ -491,6 +479,9 @@ def _(maldi_psf_ds, original_xr):
             for iter_idx in range(1, num_iterations + 1):
                 estimate = richardson_lucy(estimate, kernel, num_iter=1)
                 output[i, iter_idx, :, :] = estimate.astype(np.float32)
+
+            # Rescale back to original intensity range
+            output[i] *= max_val
 
         return output
 
@@ -541,12 +532,6 @@ def _(maldi_psf_ds, original_xr):
 
     show_export_button = True
     return result_xr, show_export_button
-
-
-@app.cell
-def _(result_xr):
-    result_xr
-    return
 
 
 @app.cell

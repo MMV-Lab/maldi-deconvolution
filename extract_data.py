@@ -288,6 +288,11 @@ def _(imzml_file, m_z_values, tolerance):
 
 
 @app.cell
+def _():
+    return
+
+
+@app.cell
 def _(
     filepath,
     ion_image_stack,
@@ -444,33 +449,6 @@ def _(export_button, filepath, ion_image_xr):
     out_dir.mkdir(exist_ok=True, parents=True)
 
 
-    # out_dir = filepath.parent / "extracted_tiffs"
-    # out_dir.mkdir(exist_ok=True, parents=True)
-
-    # # 1cm = 1e4 um
-    # tiff_resolution_x = 1e4 / pixel_size_x
-    # tiff_resolution_y = 1e4 / pixel_size_y
-
-    # with mo.status.spinner(title="Exporting...") as _spinner:
-    #     for mz in ion_image_xr.m_z.values:
-    #         img_slice = ion_image_xr.sel(m_z=mz).values
-
-    #         fname = f"{filepath.name}_mz_{mz:.4f}±{tolerance}.tiff"
-    #         save_full_path = out_dir / fname
-
-    #         tifffile.imwrite(
-    #             save_full_path,
-    #             img_slice,
-    #             imagej=True,
-    #             compression="zlib",
-    #             photometric="minisblack",
-    #             resolution=(1 / pixel_size_x, 1 / pixel_size_y),
-    #             metadata={
-    #                 "axes": "YX",
-    #                 "unit": "um",
-    #                 # "Ranges": np.nanpercentile(img_slice, [0, 99]).tolist(),
-    #             },
-    #         )
     with mo.status.spinner(
         title="Saving...", subtitle="This should take 1-2 minutes"
     ) as _spinner:

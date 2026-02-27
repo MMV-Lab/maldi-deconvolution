@@ -137,7 +137,7 @@ def _(cmap_dict, data_xr, out_dir):
         name="Lower %", start=0, end=99, value=0
     )
     high_perc_slider = pn.widgets.FloatSlider(
-        name="Upper %", start=98.0, end=100.0, value=99.8
+        name="Upper %", start=80, end=100.0, value=99.8
     )
     _cmap_list = (
         list(cmap_dict.keys())
@@ -162,10 +162,6 @@ def _(cmap_dict, data_xr, out_dir):
 
 
     def get_image_plot(m_z, iteration, low_p, high_p, cmap_name):
-        # Map back to the actual cmap if using a dict
-        actual_cmap = (
-            cmap_dict[cmap_name] if isinstance(cmap_dict, dict) else cmap_name
-        )
 
         if has_iteration and iteration is not None:
             slice_data = data_xr.sel(m_z=m_z, iteration=iteration)
@@ -183,10 +179,10 @@ def _(cmap_dict, data_xr, out_dir):
             aspect=1,
             frame_width=500,
             clim=(v_min, v_max),
-            cmap=actual_cmap,
+            cmap=cmap_name,
             colorbar=True,
             responsive=True,
-        )
+        ).opts(invert_yaxis=True)
 
 
     def export_datacube_tiff(event):
@@ -249,9 +245,13 @@ def _(cmap_dict, data_xr, out_dir):
 
     def save_plot(event):
         save_button.disabled = True
-        status_text.value = "⏳ Saving high-res plots (SVG/PNG)..."
+        status_text.value = (
+            "⏳ Saving high-res plots (SVG/PNG) and raw data with RGB TIFF..."
+        )
 
         try:
+            # ============= PLOTS
+
             iter_val = iteration_widget.value if iteration_widget else None
 
             current_plot = get_image_plot(
@@ -278,8 +278,42 @@ def _(cmap_dict, data_xr, out_dir):
 
             hv.save(current_plot, png_path, backend="matplotlib", dpi=1200)
 
+            # ============= TIFF
+
+            data_2d = current_plot.data[list(current_plot.data.data_vars)[0]]
+            pixel_size_x = data_2d.attrs.get("pixel_size_x")
+            pixel_size_y = data_2d.attrs.get("pixel_size_y")
+
+            v_min, v_max = np.nanpercentile(
+                data_2d.values, [low_perc_slider.value, high_perc_slider.value]
+            )
+
+            shaded = shade(
+                data_2d,
+                cmap=cmap_dict[cmap_widget.value],
+                span=(v_min, v_max),
+                how="linear",
+            )
+
+            rgb_array = np.array(shaded.to_pil().convert("RGB"))
+            rgb_array = np.flipud(rgb_array)
+
+            tiff_path = out_dir / f"{base_name}_render.tiff"
+            tifffile.imwrite(
+                tiff_path,
+                rgb_array,
+                imagej=True,
+                compression="zlib",
+                photometric="rgb",
+                resolution=(1 / pixel_size_x, 1 / pixel_size_y),
+                metadata={
+                    "axes": "CYX",
+                    "unit": "um",
+                },
+            )
+
             status_text.value = (
-                f"✅ Successfully saved SVG and PNG to output folder."
+                f"✅ Successfully saved SVG, PNG, and RGB-TIFF to output folder."
             )
 
         except Exception as e:
@@ -366,6 +400,63 @@ def _(layout):
 
 
 @app.cell
+def _(
+    cmap_dict,
+    cmap_widget,
+    get_image_plot,
+    high_perc_slider,
+    iteration_widget,
+    low_perc_slider,
+    m_z_widget,
+):
+    from datashader.colors import rgb
+
+    _current_plot = get_image_plot(
+        m_z_widget.value,
+        iteration_widget.value,
+        low_perc_slider.value,
+        high_perc_slider.value,
+        cmap_widget.value,
+    )
+
+    # 1. Get the data
+    # Note: Ensure you are selecting the specific variable if it's a Dataset
+    data_2d = _current_plot.data.to_array().squeeze(drop=True).values
+
+    # 2. Normalize and create 8-bit indices
+    v_min, v_max = np.nanpercentile(
+        data_2d, [low_perc_slider.value, high_perc_slider.value]
+    )
+    indexed_data = np.interp(data_2d, (v_min, v_max), (0, 255))
+    indexed_data = np.nan_to_num(indexed_data, nan=0)
+    indexed_data = np.clip(indexed_data, 0, 255).astype(np.uint8)
+
+    # 3. Extract the Colormap
+    cmap_obj = cmap_dict[cmap_widget.value]  # The ListedColormap object
+
+    # Instead of cmap_obj.colors, sample it at 256 points.
+    # This ensures a smooth ramp even if the ListedColormap only had 10 colors.
+    x_steps = np.linspace(0, 1, 256)
+    color_floats = cmap_obj(x_steps)[:, :3]  # Returns (256, 3) in range 0.0 to 1.0
+
+    # 4. Convert to TIFF's 16-bit Palette Format
+    # TIFF requires a (3, 256) array of uint16 (0 to 65535)
+    # We multiply by 65535 to scale 1.0 to the max 16-bit value
+    palette_for_tiff = (color_floats.T * 65535).astype(np.uint16)
+
+    # 5. Save using tifffile
+    tifffile.imwrite(
+        "colormapped_output.tif",
+        indexed_data,
+        imagej=True,
+        photometric="palette",
+        colormap=palette_for_tiff,
+        metadata={"axes": "YX"},  # Optional: clarifies orientation for ImageJ/Fiji
+    )
+    return
+
+
+@app.cell
 def _():
     swatch_button = mo.ui.run_button(label="Generate Colormap Swatches")
     swatch_button
@@ -414,177 +505,6 @@ def _(
         swatch_grid.objects = swatches
 
         mo.output.append(swatch_grid)
-    return
-
-
-@app.cell
-def _():
-    # def export_datacube_tiff_old(event):
-    #     export_status.value = "⏳ Exporting TIFFs... please wait."
-    #     export_tiff_button.disabled = True
-
-    #     try:
-    #         # 1. Metadata Extraction
-    #         pixel_size_x = data_xr.attrs.get("pixel_size_x", 1.0)
-    #         pixel_size_y = data_xr.attrs.get("pixel_size_y", 1.0)
-    #         original_file_name = data_xr.attrs.get("original_file_name", "data")
-    #         tolerance = data_xr.attrs.get("tolerance", 0.0)
-
-    #         # 1cm = 10,000 um
-    #         res_x = 1e4 / pixel_size_x
-    #         res_y = 1e4 / pixel_size_y
-
-    #         fname = f"{original_file_name}_tol{tolerance}_deconvolved.tiff"
-
-    #         img_stack = data_xr.transpose("iteration", "m_z", "y", "x").values
-
-    #         tifffile.imwrite(
-    #             out_dir / fname,
-    #             img_stack.astype(np.float32),
-    #             imagej=True,
-    #             # bigtiff=True,
-    #             compression="zlib",
-    #             photometric="minisblack",
-    #             resolution=(res_x, res_y),
-    #             metadata={
-    #                 "axes": "TCYX",
-    #                 "unit": "um",
-    #             },
-    #         )
-
-    #         export_status.value = f"✅ Success!"
-
-    #     except Exception as e:
-    #         export_status.value = f"❌ Error: {str(e)}"
-
-    #     finally:
-    #         export_tiff_button.disabled = False
-    return
-
-
-@app.cell
-def _():
-    # # 1. m_z slider with full precision display
-
-    # pn.extension()
-
-    # mz_vals = data_xr.m_z.values
-    # mz_options = {f"{val:.4f}": val for val in mz_vals}
-    # m_z_widget = pn.widgets.DiscreteSlider(
-    #     name="m/z Value", options=mz_options, value=mz_vals[177], width=300
-    # )
-
-    # # 2. Iteration slider
-    # iteration_widget = pn.widgets.DiscreteSlider(
-    #     name="Iteration",
-    #     options=list(data_xr.iteration.values),
-    #     value=int(data_xr.iteration.values[8]),
-    #     width=300,
-    # )
-
-    # # 3. HIGH PRECISION CONTRAST SLIDERS
-    # # Lower bound: Standard 0-100 range
-    # low_perc_slider = pn.widgets.FloatSlider(
-    #     name="Lower Percentile",
-    #     start=0,
-    #     end=99,
-    #     value=0,
-    #     step=0.1,
-    # )
-
-    # # Upper bound: Fine-grained control for the top 2%
-    # high_perc_slider = pn.widgets.FloatSlider(
-    #     name="Upper Percentile (Fine Tune)",
-    #     start=98.0,
-    #     end=100.0,
-    #     value=99.8,
-    #     step=0.1,
-    # )
-
-    # # 4. Colormap widget
-    # cmap_widget = pn.widgets.ColorMap(
-    #     name="Colormap",
-    #     options=cmap_dict,
-    #     value=cmap_dict["Blues"],
-    # )
-
-
-    # # 5. Reactive Plotting Function
-    # @pn.depends(
-    #     m_z=m_z_widget,
-    #     iteration=iteration_widget,
-    #     low_p=low_perc_slider,
-    #     high_p=high_perc_slider,
-    #     cmap=cmap_widget,
-    # )
-    # def get_image_plot(m_z, iteration, low_p, high_p, cmap):
-    #     # Select the 2D slice (384x384)
-    #     slice_data = data_xr.sel(m_z=m_z, iteration=iteration)
-
-    #     v_min, v_max = np.nanpercentile(slice_data.values, [low_p, high_p])
-
-    #     # Ensure v_max > v_min to avoid hvplot errors
-    #     if v_max <= v_min:
-    #         v_max = v_min + 1e-6
-
-    #     return slice_data.hvplot.image(
-    #         x="x",
-    #         y="y",
-    #         aspect=1,
-    #         data_aspect=1,
-    #         clim=(v_min, v_max),
-    #         cmap=cmap,
-    #         colorbar=True,
-    #         hover=False,
-    #         # responsive=True,
-    #     )
-    #     # ).opts(active_tools=["wheel_zoom"], scalebar=True)
-
-
-    # save_button = pn.widgets.Button(
-    #     name="💾 Save High-Res plot", button_type="primary"
-    # )
-
-
-    # def save_plot(event):
-    #     # 1. Get the current plot by calling your existing function with current widget values
-    #     current_plot = get_image_plot(
-    #         m_z=m_z_widget.value,
-    #         iteration=iteration_widget.value,
-    #         low_p=low_perc_slider.value,
-    #         high_p=high_perc_slider.value,
-    #         cmap=cmap_widget.value,
-    #     )
-
-    #     # 2. Save using the Matplotlib backend for high DPI control
-    #     # This doesn't change your interactive plot, just the export
-    #     filename = (
-    #         f"plot_mz_{m_z_widget.value:.2f}_iter_{iteration_widget.value}.svg"
-    #     )
-
-    #     # We use the matplotlib renderer specifically for high-quality static export
-    #     hv.save(current_plot, filename, backend="matplotlib", dpi=1200)
-    #     print(f"Saved to {filename}")
-
-
-    # save_button.on_click(save_plot)
-
-
-    # # 6. Layout
-    # layout = pn.Column(
-    #     pn.Row(
-    #         pn.Column(m_z_widget, iteration_widget),
-    #         pn.Column(
-    #             low_perc_slider,
-    #             high_perc_slider,
-    #             cmap_widget,
-    #         ),
-    #     ),
-    #     get_image_plot,
-    #     save_button,
-    # )
-
-    # mo.plain(layout.servable())
     return
 
 
@@ -664,73 +584,21 @@ def export_xarray_to_tiff(data_array: xr.DataArray, output_dir: Path):
 
 @app.cell
 def _():
-    # m_z_widget.value, iteration_widget.value
     return
 
 
 @app.cell
 def _():
-    return
-
-
-@app.cell
-def _(data_xr, iteration_widget, m_z_widget):
-    if iteration_widget:
-        slice_sel = data_xr.sel(
-            m_z=m_z_widget.value, iteration=iteration_widget.value
-        )
-    else:
-        slice_sel = data_xr.sel(m_z=m_z_widget.value)
-
-    _plot = slice_sel.hvplot.image(aspect="square", colorbar=True)
-    hvplot.render(_plot, backend="matplotlib", fig="svg", dpi=3000)
-    hvplot.save(_plot, "test.svg", fig="svg", dpi=3000)
-    return
-
-
-@app.cell
-def _():
-    #
+    # if iteration_widget:
+    #     slice_sel = data_xr.sel(
+    #         m_z=m_z_widget.value, iteration=iteration_widget.value
+    #     )
+    # else:
+    #     slice_sel = data_xr.sel(m_z=m_z_widget.value)
 
     # _plot = slice_sel.hvplot.image(aspect="square", colorbar=True)
-
-    # mr = hv.renderer("matplotlib")
-    # mr.fig = "svg"
-    # mr.dpi = 300
-    # mr.dpi = 300
-    # mr.show(_plot)
-    # # mr.save(slice_sel.hvplot.image(aspect="square"), "ex")
-
-
-    # # try_this = hv.renderer('matplotlib').get_plot(slice_sel.hvplot.image(aspect="square"))
-    return
-
-
-@app.cell
-def _():
-    # selection_dict = {
-    #     dim.name: val
-    #     for dim, val in zip(preview_plot.kdims, preview_plot.current_key)
-    # }
-
-    # print(selection_dict)
-    return
-
-
-@app.cell
-def _():
-    # slice_sel = data_xr.sel(**selection_dict)
-    # slice_sel
-    return
-
-
-@app.cell
-def _():
-    # hv.extension("matplotlib")
-    # hv.output(backend="matplotlib", fig="svg")
-    # out = slice_sel.hvplot.image(aspect="square")
-    # # hvplot.save(out, "test.svg")
-    # out
+    # hvplot.render(_plot, backend="matplotlib", fig="svg", dpi=3000)
+    # hvplot.save(_plot, "test.svg", fig="svg", dpi=3000)
     return
 
 
