@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.19.4"
+__generated_with = "0.20.4"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -10,23 +10,23 @@ with app.setup:
     import hvplot
     import holoviews as hv
     import hvplot.xarray
-    import matplotlib.pyplot as plt
     import numpy as np
     import xarray as xr
-    from datashader.transfer_functions import shade
-    from matplotlib import cm
 
-    import datetime, json
+    import datetime
+    import json
 
-    import os
-    import tifffile
-    import itertools
     from skimage.restoration import richardson_lucy
     from pathlib import Path
     from typing import Union, Tuple, Optional
 
-    from psf_generator import MaldiPSFGenerator
-    from visualize import export_xarray_to_tiff
+
+    import sys
+    _root_dir = Path(__file__).resolve().parent.parent
+    if str(_root_dir) not in sys.path:
+        sys.path.append(str(_root_dir))
+
+    from src.psf_generator import MaldiPSFGenerator
 
 
 @app.function
@@ -106,7 +106,7 @@ def load_decay_profile(
             )
 
         # CASE B: 2 Columns (Pass, Intensity)
-        elif width >= 2:
+        elif width == 2:
             # Assume col 0 is Pass, col 1 is Intensity
             df = df.select(
                 [
@@ -115,45 +115,65 @@ def load_decay_profile(
                 ]
             )
 
+        # CASE C: 3+ Columns (Pass, Intensity, Error)
+        elif width == 3:
+            # Assume col 0 is Pass, col 1 is Intensity, col 2 is Error/Uncertainty
+            df = df.select(
+                [
+                    pl.col(df.columns[0]).alias("pass_idx"),
+                    pl.col(df.columns[1]).alias("intensity"),
+                    pl.col(df.columns[2]).alias("error"),
+                ]
+            )
+
         else:
             return None, "CSV structure invalid."
 
         # 6. STRICT TYPE CASTING & CLEANUP
-        # Drop nulls that might appear from empty trailing lines
-        df = df.drop_nulls()
+        # Drop nulls only on required columns; error column may have partial data
+        df = df.drop_nulls(subset=["pass_idx", "intensity"])
 
-        df = df.with_columns(
-            [
-                pl.col("pass_idx").cast(pl.Int64),
-                pl.col("intensity").cast(pl.Float64),
-            ]
-        )
+        cast_exprs = [
+            pl.col("pass_idx").cast(pl.Int64),
+            pl.col("intensity").cast(pl.Float64),
+        ]
+        if "error" in df.columns:
+            cast_exprs.append(pl.col("error").cast(pl.Float64))
+
+        df = df.with_columns(cast_exprs)
 
         # Ensure pass_idx is sorted (optional, but usually desired for decay profiles)
         df = df.sort("pass_idx")
 
         # Reorder columns
-        df = df.select(["pass_idx", "intensity"])
+        col_order = ["pass_idx", "intensity"]
+        if "error" in df.columns:
+            col_order.append("error")
+        df = df.select(col_order)
 
-        max_intensity = df["intensity"].max()
-        first_row_intensity = df["intensity"][0]
+        # Normalization logic depends on number of columns
+        if "error" not in df.columns:
+            # 1-2 column input: normalize to max
+            max_intensity = df["intensity"].max()
 
-        # 1. Check if max is zero to avoid division by zero
-        if max_intensity == 0:
-            return None, "Maximum intensity is 0; cannot normalize data."
+            # Check if max is zero to avoid division by zero
+            if max_intensity == 0:
+                return None, "Maximum intensity is 0; cannot normalize data."
 
-        # 2. Check if the maximum is in the first row
-        # (We use a small tolerance or simple comparison)
-        # if first_row_intensity < max_intensity:
-        #     return (
-        #         None,
-        #         "Validation Error: The maximum intensity must be in the first row (initial pass).",
-        #     )
-
-        # 3. Normalize the intensity column
-        df = df.with_columns(
-            (pl.col("intensity") / max_intensity).alias("intensity")
-        )
+            # Normalize the intensity column
+            df = df.with_columns(
+                (pl.col("intensity") / max_intensity).alias("intensity")
+            )
+        else:
+            # 3-column input: assume already normalized
+            # Verify that the first intensity value is 1.0
+            first_intensity = df["intensity"][0]
+            tolerance = 1e-6
+            if abs(first_intensity - 1.0) > tolerance:
+                return (
+                    None,
+                    f"Validation Error: For 3-column input, intensity must be normalized with intensity[0]=1.0, got {first_intensity:.6f}.",
+                )
 
         return df, None
 
@@ -306,12 +326,16 @@ def _(parameters_form):
         mo.output.append(mo.callout("Ok!", kind="success"))
 
         decay_df, _ = load_decay_profile(parameters_form.value["decay_csv"][0])
+        decay_errors = (
+            decay_df["error"].to_list() if "error" in decay_df.columns else None
+        )
         maldi_psf = MaldiPSFGenerator(
             laser_diameter_um=float(parameters_form.value["laser_diameter"]),
             step_size_um=float(parameters_form.value["step_size"]),
             kernel_size=int(parameters_form.value["kernel_size"]),
             scan_direction=parameters_form.value["scan_dir"],
             decay_factors=decay_df["intensity"].to_list(),
+            decay_errors=decay_errors,
             decay_model=parameters_form.value["decay_model"],
             method=parameters_form.value["sim_method"],
             sim_res_um=0.01,
@@ -325,6 +349,17 @@ def _(maldi_psf_ds):
     decay_plot = maldi_psf_ds.decay_measured.hvplot.scatter(
         x="pass_idx", label="Measured", color="black", size=50
     )
+
+    if "decay_errors" in maldi_psf_ds:
+        _err_data = {
+            "pass_idx": maldi_psf_ds.pass_idx.values,
+            "intensity": maldi_psf_ds.decay_measured.values,
+            "error": maldi_psf_ds.decay_errors.values,
+        }
+        _err_bars = hv.ErrorBars(
+            _err_data, kdims="pass_idx", vdims=["intensity", "error"]
+        ).opts(color="black", line_width=1.5)
+        decay_plot = decay_plot * _err_bars
 
     if "decay_fit" in maldi_psf_ds:
         fit_line = maldi_psf_ds.decay_fit.hvplot.line(
@@ -427,7 +462,7 @@ def _():
 
 
 @app.cell
-def _(widget_selected_dir):
+def _(parameters_form, widget_selected_dir):
     input = None
     if len(widget_selected_dir.value) == 1:
         input = Path(widget_selected_dir.value[0].path)
@@ -444,99 +479,313 @@ def _(widget_selected_dir):
 
         original_xr = xr.open_dataarray(input)
         original_xr = original_xr.chunk({"m_z": 1, "y": -1, "x": -1})
+        _sim_pixel_size = float(parameters_form.value["step_size"])
+        _image_pixel_size = float(original_xr.attrs.get("pixel_size_x"))
+        if _image_pixel_size != _sim_pixel_size:
+            # del original_xr
+            mo.output.replace(
+                mo.md(
+                    f"""The pixel size do *not* match!
+
+                    **Image**: {_image_pixel_size}
+
+                    **Simulation**: {_sim_pixel_size}
+
+                    """
+                ).callout(kind="danger")
+            )
     return input, original_xr
+
+
+@app.function
+def perform_batch_deconvolution(img_batch, kernel, num_iterations):
+    """
+    Operates on a chunk of data.
+    Input shape:  (batch, y, x)  <- corresponds to a chunk of m_z
+    Output shape: (batch, iteration, y, x)
+    """
+    # 1. Prepare output array
+    # Shape: (batch_size, num_iterations + 1, y, x)
+    batch_size, h, w = img_batch.shape
+    out_shape = (batch_size, num_iterations + 1, h, w)
+    output = np.zeros(out_shape, dtype=np.float32)
+
+    # 2. Iterate over the batch (the m_z chunk)
+    # We loop manually here, which is often faster/safer than np.vectorize
+    for i in range(batch_size):
+        img_2d = img_batch[i].astype(np.float32)
+
+        # Normalize
+        max_val = np.max(img_2d)
+        if max_val > 0:
+            img_2d /= max_val
+
+        # Store Iteration 0 (Original)
+        estimate = img_2d.copy()
+        output[i, 0, :, :] = estimate
+
+        # Deconvolution Loop
+        for iter_idx in range(1, num_iterations + 1):
+            estimate = richardson_lucy(estimate, kernel, num_iter=1)
+            output[i, iter_idx, :, :] = estimate.astype(np.float32)
+
+        # Rescale back to original intensity range
+        output[i] *= max_val
+
+    return output
+
+
+@app.function
+def deconvolute_dataset(input_xarray, kernel, num_iterations=10):
+
+    iter_coords = np.arange(num_iterations + 1)
+
+    deconvolved_da = xr.apply_ufunc(
+        perform_batch_deconvolution,
+        input_xarray,
+        kwargs={"kernel": kernel, "num_iterations": num_iterations},
+        input_core_dims=[["y", "x"]],
+        output_core_dims=[["iteration", "y", "x"]],
+        vectorize=False,
+        dask="parallelized",
+        output_dtypes=[np.float32],
+        dask_gufunc_kwargs={"output_sizes": {"iteration": len(iter_coords)}},
+    )
+
+    deconvolved_da = deconvolved_da.assign_coords(iteration=iter_coords)
+
+    deconvolved_da.name = "deconvolved_ion_intensity"
+    deconvolved_da.attrs["long_name"] = "Ion Intensity"
+    deconvolved_da.attrs["units"] = "a.u."
+    return deconvolved_da
 
 
 @app.cell
 def _(maldi_psf_ds, original_xr):
-    def perform_batch_deconvolution(img_batch, kernel, num_iterations):
-        """
-        Operates on a chunk of data.
-        Input shape:  (batch, y, x)  <- corresponds to a chunk of m_z
-        Output shape: (batch, iteration, y, x)
-        """
-        # 1. Prepare output array
-        # Shape: (batch_size, num_iterations + 1, y, x)
-        batch_size, h, w = img_batch.shape
-        out_shape = (batch_size, num_iterations + 1, h, w)
-        output = np.zeros(out_shape, dtype=np.float32)
-
-        # 2. Iterate over the batch (the m_z chunk)
-        # We loop manually here, which is often faster/safer than np.vectorize
-        for i in range(batch_size):
-            img_2d = img_batch[i].astype(np.float32)
-
-            # Normalize
-            max_val = np.max(img_2d)
-            if max_val > 0:
-                img_2d /= max_val
-
-            # Store Iteration 0 (Original)
-            estimate = img_2d.copy()
-            output[i, 0, :, :] = estimate
-
-            # Deconvolution Loop
-            for iter_idx in range(1, num_iterations + 1):
-                estimate = richardson_lucy(estimate, kernel, num_iter=1)
-                output[i, iter_idx, :, :] = estimate.astype(np.float32)
-
-            # Rescale back to original intensity range
-            output[i] *= max_val
-
-        return output
-
-
-    def deconvolute_dataset(input_xarray, kernel, num_iterations=10):
-
-        # 1. Coordinate setup
-        iter_coords = np.arange(num_iterations + 1)
-
-        # 2. Apply Ufunc
-        # We allow the function to handle the 'm_z' chunking manually by setting vectorize=False
-        deconvolved_da = xr.apply_ufunc(
-            perform_batch_deconvolution,
-            input_xarray,
-            kwargs={"kernel": kernel, "num_iterations": num_iterations},
-            # Core dims are what the function manipulates strictly.
-            # Xarray broadcasts over others (m_z), passing them as chunks to the function.
-            input_core_dims=[["y", "x"]],
-            output_core_dims=[["iteration", "y", "x"]],
-            # KEY CHANGES:
-            vectorize=False,  # We handle the batch loop manually for speed
-            dask="parallelized",  # Map across Dask chunks
-            output_dtypes=[np.float32],
-            dask_gufunc_kwargs={"output_sizes": {"iteration": len(iter_coords)}},
-        )
-
-        # 3. Add coords and return
-        deconvolved_da = deconvolved_da.assign_coords(iteration=iter_coords)
-
-        deconvolved_da.name = "deconvolved_ion_intensity"
-        deconvolved_da.attrs["long_name"] = "Ion Intensity"
-        deconvolved_da.attrs["units"] = "a.u."
-        return deconvolved_da
-
-
-    # --- EXECUTION ---
-
-    # 1. Chunking is MANDATORY for dask='parallelized' to work
-    # Chunk 'm_z' (the batch dim), but keep 'y' and 'x' intact (-1) for FFT/Convolution
-
-
-    # 2. Run Lazy
     result_xr = deconvolute_dataset(
         original_xr,
         kernel=maldi_psf_ds.final_signal_kernel.values,
         num_iterations=10,
     )
 
-    show_export_button = True
-    return result_xr, show_export_button
+    # show_export_button = True
+    return (result_xr,)
 
 
 @app.cell
-def _(show_export_button):
-    mo.stop(not show_export_button)
+def _():
+    return
+
+
+@app.cell
+def _():
+    from scipy.signal import convolve2d
+
+
+    def perform_single_slice_convolution(img_2d, kernel):
+        """
+        Operates on a single 2D slice at a time.
+        Input shape:  (y, x)
+        Output shape: (y, x)
+        """
+        img_2d = img_2d.astype(np.float32)
+
+        # 1. Normalize
+        # (Note: Convolution is linear so this isn't strictly necessary like it is
+        # for Richardson-Lucy, but we keep it here to match your original logic
+        # and prevent potential float overflow).
+        max_val = np.max(img_2d)
+        if max_val > 0:
+            img_2d /= max_val
+
+            # 2. Forward Convolution
+            # mode='same' keeps the output dimensions identical to the input
+            # boundary='symm' (symmetric) is typical to prevent edge artifacts
+            img_2d = convolve2d(img_2d, kernel, mode="same", boundary="symm")
+
+            # 3. Rescale back to original intensity range
+            img_2d *= max_val
+
+        return img_2d.astype(np.float32)
+
+
+    def convolve_dataset(input_xarray, kernel):
+        """
+        Applies 2D convolution over an xarray dataset slice by slice.
+        """
+        # Apply Ufunc
+        convolved_da = xr.apply_ufunc(
+            perform_single_slice_convolution,
+            input_xarray,
+            kwargs={"kernel": kernel},
+            input_core_dims=[["y", "x"]],
+            output_core_dims=[["y", "x"]],
+            vectorize=True,  # True means xarray feeds strictly 2D slices to the function
+            dask="parallelized",  # Still distributes across Dask chunks safely
+            output_dtypes=[np.float32],
+        )
+
+        # Add metadata
+        convolved_da.name = "convolved_ion_intensity"
+        convolved_da.attrs["long_name"] = "Convolved Ion Intensity"
+        convolved_da.attrs["units"] = input_xarray.attrs.get("units", "a.u.")
+
+        return convolved_da
+
+    return (convolve_dataset,)
+
+
+@app.cell
+def _(original_xr, parameters_form):
+    # Extract parameters from the form
+    laser_diameter = float(parameters_form.value["laser_diameter"])
+    step_size = float(parameters_form.value["step_size"])
+    kernel_size = int(parameters_form.value["kernel_size"])
+    decay_df_compare, _ = load_decay_profile(parameters_form.value["decay_csv"][0])
+    decay_errors_compare = (
+        decay_df_compare["error"].to_list()
+        if "error" in decay_df_compare.columns
+        else None
+    )
+    scan_direction = parameters_form.value["scan_dir"]
+    decay_model = parameters_form.value["decay_model"]
+
+    # 1. GENERATE TWO PSFs: Geometric and Beam Profile
+    psf_geometric = MaldiPSFGenerator(
+        laser_diameter_um=laser_diameter,
+        step_size_um=step_size,
+        kernel_size=kernel_size,
+        scan_direction=scan_direction,
+        decay_factors=decay_df_compare["intensity"].to_list(),
+        decay_errors=decay_errors_compare,
+        decay_model=decay_model,
+        method="geometric",
+        sim_res_um=0.01,
+    )
+    psf_geometric_ds = psf_geometric.to_xarray(fov_only=False)
+
+    psf_beam = MaldiPSFGenerator(
+        laser_diameter_um=laser_diameter,
+        step_size_um=step_size,
+        kernel_size=kernel_size,
+        scan_direction=scan_direction,
+        decay_factors=decay_df_compare["intensity"].to_list(),
+        decay_errors=decay_errors_compare,
+        decay_model=decay_model,
+        method="beam_profile",
+        sim_res_um=0.01,
+    )
+    psf_beam_ds = psf_beam.to_xarray(fov_only=False)
+
+
+    # Deconvolve with geometric method
+    deconv_geometric = deconvolute_dataset(
+        original_xr,
+        kernel=psf_geometric_ds.final_signal_kernel.values,
+        num_iterations=50,
+    )
+
+    # Deconvolve with beam profile method
+    deconv_beam = deconvolute_dataset(
+        original_xr,
+        kernel=psf_beam_ds.final_signal_kernel.values,
+        num_iterations=50,
+    )
+    return deconv_beam, deconv_geometric, psf_beam_ds, psf_geometric_ds
+
+
+@app.cell
+def _(
+    convolve_dataset,
+    deconv_beam,
+    deconv_geometric,
+    original_xr,
+    psf_beam_ds,
+    psf_geometric_ds,
+):
+    # select only top 10
+    original_data = (
+        original_xr.sortby(original_xr.median(dim=["x", "y"]), ascending=False)
+        .head(m_z=50)
+        .copy()
+    )
+
+    deconv_geometric_final = deconv_geometric.sel(
+        iteration=50, m_z=original_data.m_z
+    )
+    deconv_beam_final = deconv_beam.sel(iteration=50, m_z=original_data.m_z)
+
+    reconvolved_geometric = convolve_dataset(
+        deconv_geometric_final, psf_geometric_ds.final_signal_kernel.values
+    )
+    reconvolved_beam = convolve_dataset(
+        deconv_beam_final, psf_beam_ds.final_signal_kernel.values
+    )
+    return original_data, reconvolved_beam, reconvolved_geometric
+
+
+@app.cell
+def _(original_data, reconvolved_beam, reconvolved_geometric):
+    def calculate_metrics_optimized(true, pred, label):
+
+        residual_sq = (true - pred) ** 2
+
+        sse = residual_sq.sum(dim=["x", "y"])
+        mse = residual_sq.mean(dim=["x", "y"])
+        rmse = np.sqrt(mse)
+
+        data_mean = true.mean(dim=["x", "y"])
+        data_range = true.max(dim=["x", "y"]) - true.min(dim=["x", "y"])
+        data_std = true.std(dim=["x", "y"])
+
+        ds_metrics = xr.Dataset(
+            {
+                "SSE": sse,
+                "RMSE": rmse,
+                "NRMSE_Mean": rmse / data_mean,
+                "NRMSE_Range": rmse / data_range,
+                "NRMSE_Std": rmse / data_std,
+            }
+        )
+
+        df = pl.from_pandas(ds_metrics.to_dataframe().reset_index())
+
+        return df.with_columns(pl.lit(label).alias("Method"))
+
+
+    df_geometric = calculate_metrics_optimized(
+        original_data, reconvolved_geometric, "Geometric"
+    )
+    df_beam = calculate_metrics_optimized(original_data, reconvolved_beam, "Beam")
+
+    df_metrics = pl.concat([df_geometric, df_beam])
+    return (df_metrics,)
+
+
+@app.cell
+def _(df_metrics):
+    (
+        df_metrics.group_by("Method").agg(
+            pl.selectors.numeric().exclude("m_z").median()
+        )
+    )
+    return
+
+
+@app.cell
+def _(result_xr):
+    _preview = result_xr.hvplot.image(x="x", y="y", aspect="square", cmap="magma")
+
+    mo.output.append(mo.md("## Preview"))
+    mo.output.append(_preview)
+    return
+
+
+@app.cell
+def _(result_xr):
+    # mo.stop(not show_export_button)
+
+    result_xr
 
     export_button = mo.ui.run_button(label="Export")
 
@@ -554,6 +803,8 @@ def _(show_export_button):
 @app.cell
 def _(export_button, input, maldi_psf_ds, result_xr):
     mo.stop(not export_button.value)
+
+    # result_xr
 
     with mo.status.spinner(
         title="Saving...", subtitle="This should take 1-2 minutes"

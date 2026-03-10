@@ -9,12 +9,9 @@ with app.setup:
     import numpy as np
     import xarray as xr
 
-    import os
     import tifffile
     from pathlib import Path
 
-    import matplotlib.pyplot as plt
-    from matplotlib import cm
     import matplotlib as mpl
     import panel as pn
     import holoviews as hv
@@ -196,7 +193,7 @@ def _(cmap_dict, data_xr, out_dir):
             original_file_name = data_xr.attrs.get("original_file_name", "data")
             tolerance = data_xr.attrs.get("tolerance", 0.0)
 
-            tiff_dir = out_dir / "exported_tiffs"
+            tiff_dir = out_dir / "exported_datacube"
             tiff_dir.mkdir(exist_ok=True)
 
             total_mz = len(mz_vals)
@@ -313,7 +310,7 @@ def _(cmap_dict, data_xr, out_dir):
             )
 
             status_text.value = (
-                f"✅ Successfully saved SVG, PNG, and RGB-TIFF to output folder."
+                "✅ Successfully saved SVG, PNG, and RGB-TIFF to output folder."
             )
 
         except Exception as e:
@@ -395,7 +392,7 @@ def _(
 
 @app.cell
 def _(layout):
-    mo.lazy(layout, show_loading_indicator=True)
+    layout.servable()
     return
 
 
@@ -409,7 +406,7 @@ def _(
     low_perc_slider,
     m_z_widget,
 ):
-    from datashader.colors import rgb
+    
 
     _current_plot = get_image_plot(
         m_z_widget.value,

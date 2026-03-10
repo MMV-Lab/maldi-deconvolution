@@ -34,13 +34,11 @@ Core Concepts:
     the actual signal density emitted during the current laser shot.
 """
 
-import pandas as pd
 import numpy as np
-import os
 from scipy.interpolate import interp1d
 from scipy.optimize import curve_fit
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional
+from typing import List, Optional
 import xarray as xr
 
 
@@ -61,6 +59,7 @@ class MaldiPSFGenerator:
     method: str = "beam_profile"
     decay_model: str = "exponential"
     decay_factors: List[float] = field(default_factory=lambda: [1.0])
+    decay_errors: Optional[List[float]] = None  # Per-point sigma; enables weighted fitting when provided
 
     # Internal storage and computation results
     xv: Optional[np.ndarray] = None
@@ -165,21 +164,39 @@ class MaldiPSFGenerator:
     def _apply_decay_model(self) -> None:
         """
         Maps the continuous dose map to decay factors using either interpolation or exponential fitting.
+        When decay_errors is provided (3-column CSV input), curve_fit uses sigma weighting
+        (absolute_sigma=True) for a chi-squared-optimal fit.
         Updates self.decay_map and self.decay_fit_results.
         """
         x_indices = np.arange(1, len(self.decay_factors) + 1, 1)
         decay_map = None
 
+        # Validate sigma: must match length of decay_factors and contain no zeros
+        sigma = None
+        if self.decay_errors is not None and len(self.decay_errors) == len(self.decay_factors):
+            sigma_arr = np.array(self.decay_errors, dtype=float)
+            if np.all(sigma_arr > 0):
+                sigma = sigma_arr
+            else:
+                print("Warning: decay_errors contains zero or negative values; ignoring sigma weighting.")
+
         # Exponential fit
         if self.decay_model == "exponential" and len(self.decay_factors) >= 3:
             try:
                 p0 = [np.max(self.decay_factors), 0.5, np.min(self.decay_factors)]
+                fit_kwargs = dict(
+                    p0=p0,
+                    maxfev=10000,
+                )
+                if sigma is not None:
+                    fit_kwargs["sigma"] = sigma
+                    fit_kwargs["absolute_sigma"] = True
+
                 popt, _ = curve_fit(
                     self._exponential_decay,
                     x_indices,
                     self.decay_factors,
-                    p0=p0,
-                    maxfev=2000,
+                    **fit_kwargs,
                 )
                 decay_map = self._exponential_decay(self.dose_map, *popt)
                 self.decay_fit_results = {
@@ -187,9 +204,11 @@ class MaldiPSFGenerator:
                     "b": popt[1],
                     "c": popt[2],
                     "method": "exponential",
+                    "weighted": sigma is not None,
                 }
+                weight_note = " (weighted)" if sigma is not None else ""
                 print(
-                    f"Exponential fit successful: a={popt[0]:.2f}, b={popt[1]:.2f}, c={popt[2]:.2f}"
+                    f"Exponential fit{weight_note} successful: a={popt[0]:.2f}, b={popt[1]:.2f}, c={popt[2]:.2f}"
                 )
             except Exception as e:
                 print(
@@ -375,8 +394,12 @@ class MaldiPSFGenerator:
             ds["decay_measured"] = (["pass_idx"], self.decay_factors)
             ds = ds.assign_coords({"pass_idx": passes})
 
-            ds.decay_measured.attrs["long_name"] ="Normalized Intensity"
+            ds.decay_measured.attrs["long_name"] = "Normalized Intensity"
             ds.pass_idx.attrs["long_name"] = "Number of Passes"
+
+            if self.decay_errors is not None and len(self.decay_errors) == len(self.decay_factors):
+                ds["decay_errors"] = (["pass_idx"], self.decay_errors)
+                ds.decay_errors.attrs["long_name"] = "Measurement Error (sigma)"
             # ds.pass_idx.attrs["units"] = "count"
 
             # Add Fit Curve if available
@@ -416,6 +439,7 @@ class MaldiPSFGenerator:
                 "decay_model": self.decay_model,
                 "decay_fit_results": self.decay_fit_results,
                 "decay_factors": self.decay_factors,
+                "decay_errors": self.decay_errors,
             }
         )
 
@@ -427,21 +451,18 @@ class MaldiPSFGenerator:
         Calculates the percentage of Gaussian beam energy contained within different kernel sizes.
         Prints a report to stdout.
         """
-        laser = self.laser_diameter_um
-        step = self.step_size_um
-        w0 = self.w0  # already calc in init
 
-        print(f"\n--- Kernel Energy Analysis ---")
-        print(f"Laser Diameter: {laser} um")
-        print(f"Step Size:      {step} um")
+        print("\n--- Kernel Energy Analysis ---")
+        print(f"Laser Diameter: {self.laser_diameter_um} um")
+        print(f"Step Size:      {self.step_size_um} um")
         print("-" * 45)
         print(f"{'Kernel':<10} | {'Cover (um)':<15} | {'Energy %':<10}")
         print("-" * 45)
 
         # Reference total energy (using a large grid to approximate infinity)
         large_N = 201
-        xs = (np.arange(large_N) - large_N // 2) * step
-        ys = (np.arange(large_N) - large_N // 2) * step
+        xs = (np.arange(large_N) - large_N // 2) * self.step_size_um
+        ys = (np.arange(large_N) - large_N // 2) * self.step_size_um
         xv, yv = np.meshgrid(xs, ys)
         r2 = xv**2 + yv**2
         total_energy_ref = np.sum(
@@ -451,8 +472,8 @@ class MaldiPSFGenerator:
         # Evaluate for requested kernel sizes
         for k in range(3, max_kernel + 1, 2):
             # Create grid for this kernel
-            xs_k = (np.arange(k) - k // 2) * step
-            ys_k = (np.arange(k) - k // 2) * step
+            xs_k = (np.arange(k) - k // 2) * self.step_size_um
+            ys_k = (np.arange(k) - k // 2) * self.step_size_um
             xv_k, yv_k = np.meshgrid(xs_k, ys_k)
 
             r2_k = xv_k**2 + yv_k**2
@@ -461,7 +482,7 @@ class MaldiPSFGenerator:
             percent = (kernel_energy / total_energy_ref) * 100
 
             # Physical extent (edge to edge coverage)
-            size_um = k * step
+            size_um = k * self.step_size_um
 
             print(f"{k}x{k:<7} | {size_um:<5.1f} x {size_um:<5.1f}   | {percent:.6f}%")
 

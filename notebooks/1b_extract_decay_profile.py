@@ -6,7 +6,7 @@ app = marimo.App(width="medium")
 with app.setup:
     import marimo as mo
     import numpy as np
-    from pyimzml.ImzMLParser import ImzMLParser, getionimage, browse
+    from pyimzml.ImzMLParser import ImzMLParser
     import hvplot
     import xarray as xr
     import hvplot.xarray
@@ -14,8 +14,6 @@ with app.setup:
     import hvplot.pandas
     import warnings
     import polars as pl
-    import tifffile
-    import datetime
     import re
 
     from scipy.optimize import curve_fit
@@ -31,7 +29,7 @@ def _():
     mo.md(r"""
     # Welcome!
 
-    ## This notebook serves the purpose of extracting data from a `imzML` file to a `h5` file which can be processed later (deconvolution or visualization)
+    ## This notebook serves the purpose of extracting the decay profile from multiple `imzML` files (over repeated scans)
     """)
     return
 
@@ -49,6 +47,8 @@ def _(widget_selected_file):
     path_list = sorted(
         path_list, key=lambda x: int(re.search(r"(\d+)pass", x.name).group(1))
     )
+
+    [i.name for i in path_list]
     return (path_list,)
 
 
@@ -68,7 +68,6 @@ def _(imzml_list):
     min_mz, max_mz = 650.0, 850.0
     mz_tol = 0.5  # Da window around each peak for extraction
     top_n_peaks = 10  # How many automatic peaks to track
-    saturation_limit = np.inf  # Set to detector limit if known (e.g., 65535)
     bin_width = 0.05
 
     n_passes = len(imzml_list)
@@ -171,10 +170,10 @@ def _(imzml_list):
     ).drop_vars("quantile")
 
     thresholds = xr.apply_ufunc(
-        threshold_triangle,
-        # threshold_li,
-        pass1,
-        # pass1_clipped,
+        # threshold_triangle,
+        threshold_li,
+        # pass1,
+        pass1_clipped,
         input_core_dims=[["y", "x"]],  # Core dimensions the function needs
         vectorize=True,
     )
@@ -226,8 +225,7 @@ def _(imzml_list):
 
 
 @app.cell
-def _(stats_ds):
-    stats_ds.to_dataframe()
+def _():
     return
 
 
@@ -258,9 +256,47 @@ def _(norm_ds):
 
 @app.cell
 def _(norm_ds):
+    show_export_button = True
+
     decay_df = pl.from_pandas(norm_ds.to_dataframe().reset_index())
     decay_df
-    return (decay_df,)
+    return decay_df, show_export_button
+
+
+@app.cell
+def _(decay_df):
+    print(decay_df)
+    return
+
+
+@app.cell
+def _(show_export_button):
+    export_button = mo.ui.run_button(label="Export")
+
+    mo.stop(not show_export_button)
+    mo.vstack(
+        [
+            mo.md("### Press the following button to save the decay profile:"),
+            export_button,
+        ]
+    )
+    return (export_button,)
+
+
+@app.cell
+def _(decay_df, export_button, path_list):
+    mo.stop(not export_button.value)
+
+    _out_path = path_list[0].parent / "Decay_Profile.csv"
+
+    decay_df.write_csv(_out_path, float_scientific=False, float_precision=16)
+
+    mo.md(f"""Saved decay profile as `{_out_path.name}` in:
+
+    `{_out_path.parent}`
+
+    """).callout(kind="success")
+    return
 
 
 @app.cell
@@ -379,7 +415,13 @@ def _(decay_df, n_passes):
         },
         attrs={"description": "Curve fitting results for multiple models"},
     )
-    return (fit_ds,)
+    return fit_ds, results_dict
+
+
+@app.cell
+def _(results_dict):
+    results_dict
+    return
 
 
 @app.cell

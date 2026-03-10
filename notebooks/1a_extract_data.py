@@ -6,13 +6,12 @@ app = marimo.App(width="medium")
 with app.setup:
     import marimo as mo
     import numpy as np
-    from pyimzml.ImzMLParser import ImzMLParser, getionimage, browse
+    from pyimzml.ImzMLParser import ImzMLParser
     import hvplot
     import xarray as xr
     import hvplot.xarray
     import warnings
     import polars as pl
-    import tifffile
     import datetime
 
 
@@ -59,8 +58,8 @@ def _():
 
 
 @app.cell
-def _():
-    # imzml_file.metadata.pretty()
+def _(imzml_file):
+    imzml_file.imzmldict.get("pixel size x")
     return
 
 
@@ -68,20 +67,18 @@ def _():
 def _(imzml_file):
     mo.stop(not imzml_file)
 
-    try:
-        pixel_size_x = imzml_file.imzmldict.get("pixel size x", 1.0)
-    except Exception:
-        pixel_size_x = 1.0
+    pixel_size_x_metadata = imzml_file.imzmldict.get("pixel size x", 1.3)
+    pixel_size_y_metadata = imzml_file.imzmldict.get("pixel size y", 1.3)
+    return pixel_size_x_metadata, pixel_size_y_metadata
 
-    try:
-        pixel_size_y = imzml_file.imzmldict.get("pixel size y", 1.0)
-    except Exception:
-        pixel_size_y = 1.0
 
-    pixel_size_x = float(pixel_size_x)
-    pixel_size_y = float(pixel_size_y)
+@app.cell
+def _(imzml_file, pixel_size_x_metadata, pixel_size_y_metadata):
 
-    print(f"\n\n--- Pixel Size ---")
+    pixel_size_x = float(pixel_size_x_metadata)
+    pixel_size_y = float(pixel_size_y_metadata)
+
+    print("\n\n--- Pixel Size ---")
     print(f"x: {pixel_size_x}")
     print(f"y: {pixel_size_y}")
 
@@ -106,10 +103,10 @@ def _(imzml_file):
         if i % 2000 == 0:
             print(f"Scanned {i} / {len(imzml_file.coordinates)}...", end="\r")
 
-    print(f"\n\n--- Global m/z Range (Processed) ---")
+    print("\n\n--- Global m/z Range (Processed) ---")
     print(f"Global Min m/z: {min_mz_global:.6f}")
     print(f"Global Max m/z: {max_mz_global:.6f}")
-    print(f"\n\n--- Global m/z Range (ROUNDED) ---")
+    print("\n\n--- Global m/z Range (ROUNDED) ---")
     min_mz_global = int(round(min_mz_global))
     max_mz_global = int(round(max_mz_global))
     print(f"Global Min m/z: {min_mz_global}")
@@ -119,7 +116,7 @@ def _(imzml_file):
     mo.vstack(
         [
             mo.md(
-                f"""
+                """
             Please ***check*** the extracted parameters:  
         """
             ),
@@ -335,6 +332,11 @@ def _(
 
     mo.md("# Preview")
     return ion_image_xr, show_export_button
+
+
+@app.cell
+def _():
+    return
 
 
 @app.cell
