@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.19.4"
+__generated_with = "0.20.4"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -59,12 +59,6 @@ def _():
 
 @app.cell
 def _(imzml_file):
-    imzml_file.imzmldict.get("pixel size x")
-    return
-
-
-@app.cell
-def _(imzml_file):
     mo.stop(not imzml_file)
 
     pixel_size_x_metadata = imzml_file.imzmldict.get("pixel size x", 1.3)
@@ -74,7 +68,6 @@ def _(imzml_file):
 
 @app.cell
 def _(imzml_file, pixel_size_x_metadata, pixel_size_y_metadata):
-
     pixel_size_x = float(pixel_size_x_metadata)
     pixel_size_y = float(pixel_size_y_metadata)
 
@@ -264,7 +257,7 @@ def _(imzml_file, m_z_values, tolerance):
     upper_bounds = targets + tolerance
     n_targets = len(targets)
 
-    ion_image_stack = np.zeros((n_targets, max_x, max_y), dtype=np.float32)
+    ion_image_stack = np.zeros((n_targets, max_y, max_x), dtype=np.float32)
 
     with mo.status.spinner(
         title="Loading...", subtitle="This will take 1-2 minutes"
