@@ -45,30 +45,48 @@ def _():
 
 @app.cell
 def _():
-    # # manual_file = Path(
-    # #     "data/images/SMALDI 1.4/Cerebellum/012-6_Cerebellum_A42_600nm/deconvolved_2026-05-11_08-18-45/Exploris240-2_CC012-6_Cerebellum_DHAP_A42_600nm_900x400_2kV.imzml_deconvolved.h5"
-    # # )
+    manual_file = Path(
+        "data/decay_curve/SMALDI 5/Cerebellum/DHAP_positive_A43.5/multiple_passes_filtered.h5"
+    )
 
-    # manual_file = Path(
-    #     "data/images/SMALDI 5/Cerebellum/DHAP_Positive/282-1/deconvolved_2026-05-11_09-35-43/QEHF1_CC282-1_MouseCerebellum_DHAP_A43-5_1-3um_400x238_3-5kV.imzml_deconvolved.h5"
-    # )
+    data_xr = xr.open_dataarray(manual_file).sortby('m_z')
+    intensity_ratios_xr = data_xr / data_xr.sel(m_z=760.5851, method='nearest')
+    return (intensity_ratios_xr,)
 
-    # data_xr = xr.open_dataarray(manual_file)
 
-    # intensity_ratios_xr = data_xr / data_xr.sel(m_z=760.5851)
+@app.cell
+def _(intensity_ratios_xr):
+    hv.output(backend='bokeh')
 
-    # _mz_vals = intensity_ratios_xr.coords["m_z"].values.tolist()
-    # _iter_vals = [
-    #     int(v) for v in intensity_ratios_xr.coords["iteration"].values.tolist()
-    # ]
+    pass_nums = [1, 3, 5, 9]
+    m_z_vals = intensity_ratios_xr.m_z.values
 
-    # mz_slider = mo.ui.slider(steps=_mz_vals, label="m/z", show_value=True)
-    # iter_slider = mo.ui.slider(steps=_iter_vals, label="Iteration", show_value=True)
+    grid = hv.GridSpace(kdims=['m/z', 'Pass'])
+
+    for p in pass_nums:
+        for mz in m_z_vals:
+            img_data = intensity_ratios_xr.sel(pass_num=p, m_z=mz).values
+
+            img = hv.Image(img_data, kdims=['x', 'y']).opts(colorbar=False, cmap="viridis")
+        
+            grid[mz, p] = img
+
+    grid.opts(
+        shared_xaxis=True, 
+        shared_yaxis=True,
+        plot_size=200,
+        axiswise=True,
+    )
+
+    grid
+
+
     return
 
 
 @app.cell
 def _():
+    hv.help(hv.Image.opts)
     return
 
 
@@ -78,7 +96,7 @@ def _():
     #     m_z=mz_slider.value, iteration=iter_slider.value
     # )
 
-    # _slice.hvplot.image(
+    # intensity_ratios_xr.sel(pass_num=[1,3,5,9]).hvplot.image(
     #     x="x",
     #     y="y",
     #     colorbar=True,
@@ -143,32 +161,7 @@ def _():
 
 
 @app.cell
-def _(tic_passes_xr):
-    intensity_ratios_xr = tic_passes_xr / tic_passes_xr.sel(m_z=760.5851)
-
-    _mz_vals = intensity_ratios_xr.coords["m_z"].values.tolist()
-    _pass_vals = intensity_ratios_xr.coords["pass_num"].values.tolist()
-
-    mz_slider = mo.ui.slider(steps=_mz_vals, label="m/z", show_value=True)
-    iter_slider = mo.ui.slider(steps=_pass_vals, label="Iteration", show_value=True)
-    mo.vstack([mz_slider, iter_slider])
-    return intensity_ratios_xr, iter_slider, mz_slider
-
-
-@app.cell
-def _(intensity_ratios_xr, iter_slider, mz_slider):
-    _slice = intensity_ratios_xr.sel(
-        m_z=mz_slider.value, pass_num=iter_slider.value
-    )
-
-    _slice.hvplot.image(
-        x="x",
-        y="y",
-        colorbar=True,
-        cmap="viridis",
-        data_aspect=1,
-        title=f"m/z={mz_slider.value:.4f}  iteration={iter_slider.value}",
-    )
+def _():
     return
 
 

@@ -180,6 +180,9 @@ def _(imzml_list, path_list):
         )
     )
 
+    # target_mzs = [760.5749999998994, 798.5249999998649, 734.5749999999231, 772.5249999998886, 788.6249999998739, 761.5749999998985, 808.5749999998558, 799.524999999864, 826.5749999998394, 735.5749999999222]
+
+
     # ==========================================
     # BUILD 4D DATA CUBE (pass, mz, y, x)
     # ==========================================
@@ -190,7 +193,7 @@ def _(imzml_list, path_list):
     ) as bar:
         _pass_arrays = []
         for filepath_p in path_list:
-        
+
             _da = read_imzml_to_xarray(filepath_p, target_mzs, mz_tol)
             _pass_arrays.append(_da)
             bar.update()
@@ -202,7 +205,6 @@ def _(imzml_list, path_list):
         ),
     )
     passes_xr.name = "individual_peak_intensities"
-
 
     # ==========================================
     # MASK GENERATION
@@ -229,7 +231,6 @@ def _(imzml_list, path_list):
     # ==========================================================================
 
     masked_passes = passes_xr.where(mz_masks)
-    # masked_passes = passes_xr.copy()
 
     spatial_dims = ["y", "x"]
 
@@ -274,19 +275,19 @@ def _(imzml_list, path_list):
         passes_xr,
         stats_ds,
         target_mzs,
-        thresholds,
     )
 
 
 @app.cell
-def _(thresholds):
-    thresholds
+def _(passes_xr):
+    passes_xr
     return
 
 
 @app.cell
-def _(passes_xr):
-    passes_xr.sel(pass_num=2)
+def _():
+    # tmp = xr.open_dataarray("data/tmp.h5")
+    # tmp
     return
 
 
@@ -344,25 +345,25 @@ def _(stats_ds):
     )
 
     norm_ds = norm_ds.mean(dim="m_z")
-    return (norm_ds,)
 
-
-@app.cell
-def _(norm_ds):
-    (
-        norm_ds.hvplot.errorbars(x="pass_num", y="value", yerr1="error", width=400)
-        * norm_ds.hvplot.scatter(x="pass_num", y="value", s=800)
-    )
-    return
-
-
-@app.cell
-def _(norm_ds):
     show_export_button = True
 
     decay_df = pl.from_pandas(norm_ds.to_dataframe().reset_index())
+    del norm_ds
     decay_df
+
+
     return decay_df, show_export_button
+
+
+@app.cell
+def _(decay_df):
+    (
+        decay_df.hvplot.errorbars(x="pass_num", y="value", yerr1="error", width=400)
+        * decay_df.hvplot.scatter(x="pass_num", y="value", s=800)
+    )
+
+    return
 
 
 @app.cell
@@ -380,12 +381,16 @@ def _(show_export_button):
 
 
 @app.cell
-def _(decay_df, export_button, path_list):
+def _(decay_df, export_button, passes_xr, path_list):
     mo.stop(not export_button.value)
 
     _out_path = path_list[0].parent / "Decay_Profile.csv"
 
     decay_df.write_csv(_out_path, float_scientific=False, float_precision=16)
+
+    passes_xr.to_netcdf(
+                path_list[0].parent / f"multiple_passes_filtered.h5",
+            )
 
     mo.md(f"""Saved decay profile as `{_out_path.name}` in:
 
