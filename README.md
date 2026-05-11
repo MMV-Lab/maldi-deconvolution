@@ -133,6 +133,21 @@ TBD
 
 Contributions welcome! Feel free to open issues or PRs.
 
+## CLI Usage
+### `1a_extract_data.py`
+```bash
+uv run notebooks/1a_extract_data.py -- --input PATH [--mz VALUE | --mz-csv PATH] [--tolerance VALUE]
+```
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `--input PATH` | yes | Path to the `.imzml` file to process |
+| `--mz VALUE` | no* | Single m/z value to extract |
+| `--mz-csv PATH` | no* | Path to a CSV with m/z values (no header, one value per line) |
+| `--tolerance VALUE` | no | m/z tolerance in Da (default: `0.005`) |
+
+\* If neither `--mz` nor `--mz-csv` is provided, the midpoint of the m/z range is used.
+
 ---
 
 **Happy deconvolving!** 🔬✨

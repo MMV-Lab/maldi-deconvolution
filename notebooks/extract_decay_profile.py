@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.19.4"
+__generated_with = "0.23.5"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -11,7 +11,6 @@ with app.setup:
     import xarray as xr
     import hvplot.xarray
     import hvplot.polars
-    import hvplot.pandas
     import warnings
     import polars as pl
     import re
@@ -20,6 +19,8 @@ with app.setup:
     from scipy.signal import find_peaks
     from skimage.filters import threshold_li, threshold_triangle
     import scipy.stats as stats
+
+    from extract_data import read_imzml_to_xarray
 
     hvplot.extension("matplotlib", "bokeh")
 
@@ -36,7 +37,9 @@ def _():
 
 @app.cell
 def _():
-    widget_selected_file = mo.ui.file_browser(filetypes=[".imzml"], multiple=True)
+    widget_selected_file = mo.ui.file_browser(
+        filetypes=[".imzml"], multiple=True, initial_path="data"
+    )
     mo.vstack([mo.md("# Select `imzml` file"), widget_selected_file])
     return (widget_selected_file,)
 
@@ -60,8 +63,84 @@ def _(path_list):
     return (imzml_list,)
 
 
+@app.function
+def find_peaks_from_imzml(
+    filepath,
+    min_mz: float = 650.0,
+    max_mz: float = 850.0,
+    bin_width: float = 0.05,
+    top_n_peaks: int = 10,
+    prominence_factor: float = 5.0,
+    min_peak_separation: float = 0.5,
+):
+    """Build a mean spectrum histogram from an imzML file and return the top peaks.
+
+    Parameters
+    ----------
+    filepath:
+        Path to the .imzml file.
+    min_mz, max_mz:
+        m/z range to consider.
+    bin_width:
+        Histogram bin width in Da. Controls both the spectrum resolution
+        and therefore the precision of detected peak centers.
+    top_n_peaks:
+        Number of highest-intensity peaks to return.
+    prominence_factor:
+        Peak prominence threshold as a multiple of the median noise floor.
+    min_peak_separation:
+        Minimum distance between two accepted peaks in Da.
+        Converted to bins as ``max(1, int(min_peak_separation / bin_width))``.
+
+    Returns
+    -------
+    target_mzs : list[float]
+        Detected peak centers sorted by descending intensity, up to ``top_n_peaks``.
+    mz_axis : np.ndarray
+        Bin centers of the mean spectrum.
+    mean_spectrum : np.ndarray
+        Mean intensity per bin across all pixels.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        parser = ImzMLParser(filepath)
+
+    all_coords = parser.coordinates
+    mz_bins = np.arange(min_mz, max_mz + bin_width, bin_width)
+    mz_axis = (mz_bins[:-1] + mz_bins[1:]) / 2
+    mean_spectrum = np.zeros_like(mz_axis, dtype=np.float64)
+
+    for spec_idx, _ in enumerate(all_coords):
+        mzs, ints = parser.getspectrum(spec_idx)
+        mask = (mzs >= min_mz) & (mzs <= max_mz)
+        hist, _ = np.histogram(mzs[mask], bins=mz_bins, weights=ints[mask])
+        mean_spectrum += hist
+
+    mean_spectrum /= len(all_coords)
+
+    noise_floor = np.median(mean_spectrum)
+    distance_bins = max(1, int(min_peak_separation / bin_width))
+    peak_indices, _ = find_peaks(
+        mean_spectrum,
+        prominence=noise_floor * prominence_factor,
+        distance=distance_bins,
+    )
+
+    peak_mzs = mz_axis[peak_indices]
+    peak_ints = mean_spectrum[peak_indices]
+    sort_idx = np.argsort(peak_ints)[::-1]
+    target_mzs = peak_mzs[sort_idx][:top_n_peaks].tolist()
+
+    return target_mzs, mz_axis, mean_spectrum
+
+
 @app.cell
-def _(imzml_list):
+def _():
+    return
+
+
+@app.cell
+def _(imzml_list, path_list):
     # ==========================================
     # CONFIGURATION
     # ==========================================
@@ -80,37 +159,20 @@ def _(imzml_list):
     # AUTOMATIC PEAK FINDING (on Pass 1)
     # ==========================================
 
-    mz_bins = np.arange(min_mz, max_mz + bin_width, bin_width)
-    mz_axis = (mz_bins[:-1] + mz_bins[1:]) / 2
-    mean_spectrum = np.zeros_like(mz_axis, dtype=np.float64)
-
     with mo.status.progress_bar(
         total=len(all_coords),
         title="Step 1: Automatic Peak Finding",
         subtitle="Building Mean Spectrum of Pass 1...",
     ) as bar:
-        for spec_idx, _ in enumerate(all_coords):
-            mzs, ints = parser_pass1.getspectrum(spec_idx)
-            mask = (mzs >= min_mz) & (mzs <= max_mz)
-
-            # Calculate histogram efficiently
-            hist, _ = np.histogram(mzs[mask], bins=mz_bins, weights=ints[mask])
-            mean_spectrum += hist
-            bar.update()
-
-    mean_spectrum /= len(all_coords)
-
-    # Find peaks dynamically
-    noise_floor = np.median(mean_spectrum)
-    peak_indices, _ = find_peaks(
-        mean_spectrum, prominence=noise_floor * 5, distance=int(0.5 / bin_width)
-    )
-
-    peak_mzs = mz_axis[peak_indices]
-    peak_ints = mean_spectrum[peak_indices]
-
-    sort_idx = np.argsort(peak_ints)[::-1]
-    target_mzs = peak_mzs[sort_idx][:top_n_peaks].tolist()
+        target_mzs, mz_axis, mean_spectrum = find_peaks_from_imzml(
+            path_list[0],
+            min_mz=min_mz,
+            max_mz=max_mz,
+            bin_width=bin_width,
+            top_n_peaks=top_n_peaks,
+            min_peak_separation=1.5 * mz_tol,
+        )
+        bar.update(len(all_coords))
 
     mo.output.append(
         mo.md(
@@ -121,43 +183,25 @@ def _(imzml_list):
     # ==========================================
     # BUILD 4D DATA CUBE (pass, mz, y, x)
     # ==========================================
-    data_cube = np.zeros(
-        (n_passes, len(target_mzs), max_y, max_x), dtype=np.float32
-    )
-
-    target_bounds = [(mz - mz_tol, mz + mz_tol) for mz in target_mzs]
-
     with mo.status.progress_bar(
         total=n_passes,
         title="Step 2: Building 4D Xarray Data Cube",
         subtitle="Extracting peaks individually...",
     ) as bar:
-        for p_idx, parser in enumerate(imzml_list):
-            for spec_idx, (x, y, z) in enumerate(parser.coordinates):
-                mzs, ints = parser.getspectrum(spec_idx)
-
-                for mz_idx, (low, high) in enumerate(target_bounds):
-                    idx_l = np.searchsorted(mzs, low, side="left")
-                    idx_r = np.searchsorted(mzs, high, side="right")
-
-                    if idx_r > idx_l:
-                        data_cube[p_idx, mz_idx, y - 1, x - 1] = np.sum(
-                            ints[idx_l:idx_r]
-                        )
-
+        _pass_arrays = []
+        for filepath_p in path_list:
+        
+            _da = read_imzml_to_xarray(filepath_p, target_mzs, mz_tol)
+            _pass_arrays.append(_da)
             bar.update()
 
-    passes_xr = xr.DataArray(
-        data_cube,
-        coords={
-            "pass_num": np.arange(1, n_passes + 1),
-            "m_z": target_mzs,
-            "y": np.arange(1, max_y + 1),
-            "x": np.arange(1, max_x + 1),
-        },
-        dims=["pass_num", "m_z", "y", "x"],
-        name="individual_peak_intensities",
+    passes_xr = xr.concat(
+        _pass_arrays,
+        dim=xr.DataArray(
+            np.arange(1, n_passes + 1), dims="pass_num", name="pass_num"
+        ),
     )
+    passes_xr.name = "individual_peak_intensities"
 
 
     # ==========================================
@@ -185,6 +229,7 @@ def _(imzml_list):
     # ==========================================================================
 
     masked_passes = passes_xr.where(mz_masks)
+    # masked_passes = passes_xr.copy()
 
     spatial_dims = ["y", "x"]
 
@@ -221,7 +266,64 @@ def _(imzml_list):
     stats_ds["iqr"] = stats_ds["q75"] - stats_ds["q25"]
     stats_ds["sem"] = stats_ds["std"] / np.sqrt(stats_ds["count"])
     stats_ds["se_median"] = stats_ds["sem"] * 1.2533
-    return masked_passes, n_passes, stats_ds
+    return (
+        masked_passes,
+        mean_spectrum,
+        mz_axis,
+        n_passes,
+        passes_xr,
+        stats_ds,
+        target_mzs,
+        thresholds,
+    )
+
+
+@app.cell
+def _(thresholds):
+    thresholds
+    return
+
+
+@app.cell
+def _(passes_xr):
+    passes_xr.sel(pass_num=2)
+    return
+
+
+@app.cell
+def _(mean_spectrum, mz_axis, target_mzs):
+    _spectrum_df = pl.DataFrame({"m_z": mz_axis, "intensity": mean_spectrum})
+    _peaks_df = pl.DataFrame(
+        {
+            "m_z": target_mzs,
+            "intensity": [
+                mean_spectrum[
+                    int(round((mz - mz_axis[0]) / (mz_axis[1] - mz_axis[0])))
+                ]
+                for mz in target_mzs
+            ],
+        }
+    )
+
+    _spectrum_plot = _spectrum_df.hvplot.line(
+        x="m_z",
+        y="intensity",
+        label="Mean spectrum",
+        color="steelblue",
+        alpha=0.8,
+        xlabel="m/z (Da)",
+        ylabel="Mean intensity (a.u.)",
+        title="Mean spectrum — Pass 1 (detected peaks marked)",
+    )
+    _peaks_plot = _peaks_df.hvplot.scatter(
+        x="m_z",
+        y="intensity",
+        label="Detected peaks",
+        color="red",
+        size=120,
+    )
+    _spectrum_plot * _peaks_plot
+    return
 
 
 @app.cell
@@ -264,12 +366,6 @@ def _(norm_ds):
 
 
 @app.cell
-def _(decay_df):
-    print(decay_df)
-    return
-
-
-@app.cell
 def _(show_export_button):
     export_button = mo.ui.run_button(label="Export")
 
@@ -300,8 +396,11 @@ def _(decay_df, export_button, path_list):
 
 
 @app.cell
-def _(masked_passes):
-    masked_passes.hvplot.image(aspect="square", cmap="magma")
+def _(masked_passes, passes_xr):
+    (
+        passes_xr.hvplot.image(x="x", y="y", aspect="square", cmap="magma")
+        + masked_passes.hvplot.image(x="x", y="y", aspect="square", cmap="magma")
+    )
     return
 
 

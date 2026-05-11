@@ -1,7 +1,7 @@
 import marimo
 
-__generated_with = "0.19.4"
-app = marimo.App(width="medium")
+__generated_with = "0.23.1"
+app = marimo.App(width="full")
 
 with app.setup:
     import marimo as mo
@@ -17,7 +17,10 @@ with app.setup:
     import holoviews as hv
     import hvplot
     import hvplot.xarray
-    from datashader.transfer_functions import shade
+    from datashader.transfer_functions import shade, stack
+    from matplotlib.colors import LinearSegmentedColormap
+
+    from PIL import Image, ImageChops
 
 
 @app.cell
@@ -67,7 +70,7 @@ def _():
 
 @app.cell
 def _():
-    colormap_names = ["viridis", "plasma", "inferno", "magma", "cividis"]
+    colormap_names = ["viridis", "plasma", "inferno", "magma", "cividis", "gray"]
     colormap_names.extend(
         [
             "Greys",
@@ -90,23 +93,29 @@ def _():
             "YlGn",
         ]
     )
-    return (colormap_names,)
 
+    linear_configs = {
+        "Linear Red": ["black", "red"],
+        "Linear Green": ["black", "#00ff00"],
+        "Linear Blue": ["black", "blue"],
+        "Linear Cyan": ["black", "cyan"],
+        "Linear Magenta": ["black", "magenta"],
+        "Linear Yellow": ["black", "yellow"],
+    }
 
-@app.cell
-def _(colormap_names):
-    cmap_dict = {name: mpl.colormaps[name] for name in colormap_names}
-    # cmap_dict = {name: name for name in colormap_names}
+    all_names = list(linear_configs.keys()) + colormap_names
+
+    cmap_dict = {}
+    for name in all_names:
+        if name in linear_configs:
+            cmap_dict[name] = LinearSegmentedColormap.from_list(
+                name, linear_configs[name]
+            )
+        else:
+            cmap_dict[name] = mpl.colormaps[name]
+
     # cmap_dict
-    return (cmap_dict,)
-
-
-@app.cell
-def _():
-    # nearest_val = data_xr.sel(m_z=720.59, method="nearest").m_z
-    # index = np.where(data_xr.m_z == nearest_val)[0][0]
-    # print(index)
-    return
+    return cmap_dict, colormap_names
 
 
 @app.cell
@@ -170,15 +179,20 @@ def _(cmap_dict, data_xr, out_dir):
         if v_max <= v_min:
             v_max = v_min + 1e-6
 
+        _aspect = float(
+            data_xr.attrs.get("pixel_size_y") / data_xr.attrs.get("pixel_size_x")
+        )
+
         return slice_data.hvplot.image(
             x="x",
             y="y",
-            aspect=1,
-            frame_width=500,
+            # aspect=1,
+            data_aspect=_aspect,
+            width=700,
             clim=(v_min, v_max),
             cmap=cmap_name,
             colorbar=True,
-            responsive=True,
+            responsive=False,
         ).opts(invert_yaxis=True)
 
 
@@ -318,6 +332,7 @@ def _(cmap_dict, data_xr, out_dir):
 
         finally:
             save_button.disabled = False
+
     return (
         cmap_widget,
         export_datacube_tiff,
@@ -327,6 +342,7 @@ def _(cmap_dict, data_xr, out_dir):
         iteration_widget,
         low_perc_slider,
         m_z_widget,
+        mz_options,
         save_button,
         save_plot,
         status_text,
@@ -392,7 +408,153 @@ def _(
 
 @app.cell
 def _(layout):
-    layout.servable()
+    layout
+    return
+
+
+@app.cell
+def _():
+    return
+
+
+@app.cell
+def _(data_xr, mz_options):
+    # NEW MULTICHANNEL TEST
+
+    # temp order top 3 mzs
+    _tmp = data_xr.isel(iteration=-1).median(dim=["x", "y"])
+    _mz_intensity_map = dict(zip(_tmp.m_z.values, _tmp.values))
+    _sorted_keys = sorted(
+        mz_options.keys(),
+        key=lambda k: _mz_intensity_map.get(mz_options[k], 0),
+        reverse=True,
+    )
+
+    # 3. Access your top 3
+    _top_3_keys = _sorted_keys[:3]
+
+
+    m_z_multichannel = mo.ui.multiselect(
+        mz_options, value=_top_3_keys, label="m/z:"
+    )
+
+
+    iteration_multichannel = mo.ui.slider(
+        steps=data_xr.iteration.values,
+        show_value=True,
+        label="Iteration",
+        value=max(data_xr.iteration.values),
+    )
+
+    mo.vstack([m_z_multichannel, iteration_multichannel])
+    return iteration_multichannel, m_z_multichannel
+
+
+@app.cell
+def _(cmap_dict, m_z_multichannel):
+    colormap_multichannel = mo.ui.array(
+        [
+            mo.ui.dropdown(
+                options=cmap_dict, searchable=True, label=f"Ch{i} (m/z {el})"
+            )
+            for i, el in enumerate(m_z_multichannel.value)
+        ]
+    )
+
+    low_perc_multichannel = mo.ui.array(
+        [
+            mo.ui.slider(
+                steps=np.arange(start=0, stop=99),
+                value=0,
+                show_value=True,
+                label="min %",
+            )
+            for i, el in enumerate(m_z_multichannel.value)
+        ]
+    )
+
+    high_perc_multichannel = mo.ui.array(
+        [
+            mo.ui.slider(
+                steps=np.round(np.arange(95, 100.1, 0.1), 2),
+                value=99.8,
+                show_value=True,
+                label="max %",
+            )
+            for i, el in enumerate(m_z_multichannel.value)
+        ]
+    )
+
+    run_multichannel = mo.ui.run_button(label="Composite")
+
+    mo.vstack(
+        [
+            mo.hstack(
+                [
+                    colormap_multichannel.vstack(),
+                    low_perc_multichannel.vstack(),
+                    high_perc_multichannel.vstack(),
+                ]
+            ),
+            run_multichannel,
+        ]
+    )
+    return colormap_multichannel, high_perc_multichannel, low_perc_multichannel
+
+
+@app.cell
+def _(
+    colormap_multichannel,
+    data_xr,
+    high_perc_multichannel,
+    iteration_multichannel,
+    low_perc_multichannel,
+    m_z_multichannel,
+):
+    # mo.stop(not run_multichannel.value)
+
+    multichannel_img = []
+
+    for i in range(len(m_z_multichannel.value)):
+        _data = data_xr.sel(
+            m_z=m_z_multichannel.value[i], iteration=iteration_multichannel.value
+        )
+        _span = np.nanpercentile(
+            _data.values,
+            [low_perc_multichannel.value[i], high_perc_multichannel.value[i]],
+        )
+        _span.tolist()
+        _ch = shade(
+            _data.isel(y=slice(None, None, -1)),  # INVERT THE Y DIRECTION
+            cmap=colormap_multichannel.value[i],
+            how="linear",
+            span=_span,
+        )
+
+        multichannel_img.append(_ch)
+
+
+    stack(*multichannel_img, how="add")
+    return (multichannel_img,)
+
+
+@app.cell
+def _(multichannel_img):
+    # Now standard stacking (over) will work because 
+    # the backgrounds are transparent rather than white
+    stack(multichannel_img[0], multichannel_img[1])
+    return
+
+
+@app.cell
+def _(multichannel_img):
+    _pil = [el.to_pil() for el in multichannel_img]
+    ImageChops.multiply(_pil[0], _pil[1]), Image.alpha_composite(_pil[0], _pil[1])
+    return
+
+
+@app.cell
+def _():
     return
 
 
@@ -406,8 +568,6 @@ def _(
     low_perc_slider,
     m_z_widget,
 ):
-    
-
     _current_plot = get_image_plot(
         m_z_widget.value,
         iteration_widget.value,
@@ -442,21 +602,21 @@ def _(
     palette_for_tiff = (color_floats.T * 65535).astype(np.uint16)
 
     # 5. Save using tifffile
-    tifffile.imwrite(
-        "colormapped_output.tif",
-        indexed_data,
-        imagej=True,
-        photometric="palette",
-        colormap=palette_for_tiff,
-        metadata={"axes": "YX"},  # Optional: clarifies orientation for ImageJ/Fiji
-    )
+    # tifffile.imwrite(
+    #     "colormapped_output.tif",
+    #     indexed_data,
+    #     imagej=True,
+    #     photometric="palette",
+    #     colormap=palette_for_tiff,
+    #     metadata={"axes": "YX"},  # Optional: clarifies orientation for ImageJ/Fiji
+    # )
     return
 
 
 @app.cell
 def _():
     swatch_button = mo.ui.run_button(label="Generate Colormap Swatches")
-    swatch_button
+    # swatch_button
     return (swatch_button,)
 
 
@@ -502,11 +662,6 @@ def _(
         swatch_grid.objects = swatches
 
         mo.output.append(swatch_grid)
-    return
-
-
-@app.cell
-def _():
     return
 
 
@@ -581,6 +736,15 @@ def export_xarray_to_tiff(data_array: xr.DataArray, output_dir: Path):
 
 @app.cell
 def _():
+    # _tmp_plot = get_image_plot(
+    #     m_z_widget.value,
+    #     iteration_widget.value,
+    #     low_perc_slider.value,
+    #     high_perc_slider.value,
+    #     cmap_widget.value,
+    # )
+
+    # hvplot.render(_tmp_plot, backend="matplotlib", fig="svg", dpi=3000)
     return
 
 
@@ -594,7 +758,7 @@ def _():
     #     slice_sel = data_xr.sel(m_z=m_z_widget.value)
 
     # _plot = slice_sel.hvplot.image(aspect="square", colorbar=True)
-    # hvplot.render(_plot, backend="matplotlib", fig="svg", dpi=3000)
+    #
     # hvplot.save(_plot, "test.svg", fig="svg", dpi=3000)
     return
 

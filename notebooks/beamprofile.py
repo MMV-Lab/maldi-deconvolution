@@ -1,10 +1,11 @@
 import marimo
 
 __generated_with = "0.23.1"
-app = marimo.App(width="medium")
+app = marimo.App(width="columns")
 
 with app.setup:
     import marimo as mo
+    import math
     import numpy as np
     import hvplot
     import xarray as xr
@@ -15,6 +16,8 @@ with app.setup:
     from holoviews import opts
 
     hv.extension("bokeh")
+
+    from astropy.modeling import models, fitting
 
 
     # import hvplot.xarray
@@ -43,8 +46,6 @@ def _():
 def _(widget_selected_file):
     path_list = [i.path for i in widget_selected_file.value]
     path_list = sorted(path_list)
-
-    # [i.name for i in path_list]
     return (path_list,)
 
 
@@ -80,75 +81,89 @@ def _(images, x_pixel_size, y_pixel_size):
         name="intensity",
         attrs={"units": "um"},
     )
+
+    max_pos = xy_profiles.mean(dim="sample").argmax(dim=["y", "x"])
+
+    N = 20
+    y_mid = int(max_pos["y"])
+    x_mid = int(max_pos["x"])
+
+    xy_profiles = xy_profiles.isel(
+        y=slice(y_mid - N // 2, y_mid + N // 2),
+        x=slice(x_mid - N // 2, x_mid + N // 2),
+    )
     return (xy_profiles,)
 
 
 @app.cell
 def _(xy_profiles):
-    max_pos = xy_profiles.mean(dim="sample").argmax(dim=["y", "x"])
+    x_coords = xy_profiles.x.values
+    y_coords = xy_profiles.y.values
+    X, Y = np.meshgrid(x_coords, y_coords)
 
-    N = 20
-    half = N // 2
-    y_mid = int(max_pos["y"])
-    x_mid = int(max_pos["x"])
+    avg_img = xy_profiles.mean(dim="sample")
+    std_img = xy_profiles.std(dim="sample")
 
-    cropped = xy_profiles.isel(
-        y=slice(y_mid - half, y_mid + half), x=slice(x_mid - half, x_mid + half)
-    )
-    return (cropped,)
+    fitter = fitting.LevMarLSQFitter()
+    return X, Y, avg_img, fitter, std_img, x_coords, y_coords
 
 
 @app.cell
-def _(cropped):
-    from astropy.modeling import models, fitting
+def _():
+    return
 
-    avg_img = cropped.mean(dim="sample")
-    std_img = cropped.std(dim="sample")
 
-    z_data = avg_img.values
-    x_coords = avg_img.x.values
-    y_coords = avg_img.y.values
-    X, Y = np.meshgrid(x_coords, y_coords)
+@app.cell
+def _():
+    return
 
-    max_idx = np.unravel_index(np.argmax(z_data), z_data.shape)
-    y_peak_guess = y_coords[max_idx[0]]
-    x_peak_guess = x_coords[max_idx[1]]
 
-    model_init = models.Gaussian2D(
-        amplitude=z_data.max(),
-        x_mean=x_peak_guess,
-        y_mean=y_peak_guess,
+@app.cell(hide_code=True)
+def _():
+    return
+
+
+@app.cell(column=1)
+def _(X, Y, avg_img, fitter, x_coords, y_coords):
+    _z_data = avg_img.values
+
+
+    _max_idx = np.unravel_index(np.argmax(_z_data), _z_data.shape)
+    _y_peak_guess = y_coords[_max_idx[0]]
+    _x_peak_guess = x_coords[_max_idx[1]]
+
+    _model_init = models.Gaussian2D(
+        amplitude=_z_data.max(),
+        x_mean=_x_peak_guess,
+        y_mean=_y_peak_guess,
         x_stddev=1.0,
         y_stddev=1.0,
     )
 
-    fitter = fitting.LevMarLSQFitter()
+    global_best_fit = fitter(_model_init, X, Y, _z_data)
 
-    stds = std_img.values
-    positive_stds = stds[stds > 0]
 
-    if len(positive_stds) > 0:
-        noise_floor = np.median(positive_stds)
-    else:
-        noise_floor = 1e-6
+    # stds = std_img.values
+    # positive_stds = stds[stds > 0]
 
-    safe_std = np.clip(stds, a_min=noise_floor, a_max=None)
+    # if len(positive_stds) > 0:
+    #     noise_floor = np.median(positive_stds)
+    # else:
+    #     noise_floor = 1e-6
 
-    weights = 1.0 / safe_std
+    # safe_std = np.clip(stds, a_min=noise_floor, a_max=None)
 
+    # weights = 1.0 / safe_std
     # best_fit = fitter(model_init, X, Y, z_data, weights=weights, filter_non_finite=True)
-    best_fit = fitter(model_init, X, Y, z_data)
-    return X, Y, avg_img, best_fit, std_img
+    return (global_best_fit,)
 
 
 @app.cell
-def _(X, Y, avg_img, best_fit, std_img):
-    # Activate matplotlib backend
+def _(X, Y, avg_img, global_best_fit, std_img):
     hv.extension("matplotlib")
 
-    # Get the center coordinates from the fit
-    x_center = best_fit.x_mean.value
-    y_center = best_fit.y_mean.value
+    x_center = global_best_fit.x_mean.value
+    y_center = global_best_fit.y_mean.value
 
     idx_x = np.abs(avg_img.x.values - x_center).argmin()
     idx_y = np.abs(avg_img.y.values - y_center).argmin()
@@ -157,13 +172,13 @@ def _(X, Y, avg_img, best_fit, std_img):
     x_vals = avg_img.x.values
     x_data_prof = avg_img.values[idx_y, :]
     x_err_prof = std_img.values[idx_y, :]
-    x_fit_prof = best_fit(x_vals, y_center)
+    x_fit_prof = global_best_fit(x_vals, y_center)
 
     # Prepare Y-profile data (vertical slice at x_center)
     y_vals = avg_img.y.values
     y_data_prof = avg_img.values[:, idx_x]
     y_err_prof = std_img.values[:, idx_x]
-    y_fit_prof = best_fit(x_center, y_vals)
+    y_fit_prof = global_best_fit(x_center, y_vals)
 
     # Main Plot: Original Image + Fit Contours
     img = hv.Image(
@@ -171,7 +186,9 @@ def _(X, Y, avg_img, best_fit, std_img):
     )
 
     fit_img = hv.Image(
-        (x_vals, y_vals, best_fit(X, Y)), kdims=["x", "y"], vdims=["Intensity"]
+        (x_vals, y_vals, global_best_fit(X, Y)),
+        kdims=["x", "y"],
+        vdims=["Intensity"],
     )
     contours = hv.operation.contours(fit_img, levels=6)
     main_plot = img * contours
@@ -221,17 +238,80 @@ def _(layout):
     return
 
 
-@app.cell(hide_code=True)
-def _(best_fit):
-    sig_x = best_fit.x_stddev.value
-    sig_y = best_fit.y_stddev.value
+@app.cell
+def _(global_best_fit):
+    sig_x = global_best_fit.x_stddev.value
+    sig_y = global_best_fit.y_stddev.value
 
     print(f"X-direction 1/e^2 diameter: {4 * sig_x:.4f} um")
     print(f"Y-direction 1/e^2 diameter: {4 * sig_y:.4f} um ")
-    print(f"Beam Ellipticity : {min(sig_x,sig_y)/max(sig_x,sig_y):.4f} ")
+    print(f"Beam Ellipticity : {min(sig_x, sig_y) / max(sig_x, sig_y):.4f} ")
 
-    print(f"Geometric Mean 1/e^2 diameter: {4* np.sqrt(sig_x*sig_y):.4f} um")
-    print(f"Aritmetic Mean 1/e^2 diameter: {2 * (sig_x+sig_y):.4f} um")
+    print(f"Geometric Mean 1/e^2 diameter: {4 * np.sqrt(sig_x * sig_y):.4f} um")
+    print(f"Aritmetic Mean 1/e^2 diameter: {2 * (sig_x + sig_y):.4f} um")
+    return
+
+
+@app.cell(column=2)
+def _(X, Y, fitter, x_coords, xy_profiles, y_coords):
+    fit_results = []
+
+    for _sample_val in xy_profiles.sample.values:
+        _z_data = xy_profiles.sel(sample=_sample_val).values
+
+        _max_idx = np.unravel_index(np.argmax(_z_data), _z_data.shape)
+        _y_peak_guess = y_coords[_max_idx[0]]
+        _x_peak_guess = x_coords[_max_idx[1]]
+
+        _model_init = models.Gaussian2D(
+            amplitude=_z_data.max(),
+            x_mean=_x_peak_guess,
+            y_mean=_y_peak_guess,
+            x_stddev=1.0,
+            y_stddev=1.0,
+        )
+
+        _fit = fitter(_model_init, X, Y, _z_data)
+
+        fit_results.append(
+            {
+                "sample": _sample_val,
+                "amplitude": _fit.amplitude.value,
+                "x_mean": _fit.x_mean.value,
+                "y_mean": _fit.y_mean.value,
+                "x_stddev": _fit.x_stddev.value,
+                "y_stddev": _fit.y_stddev.value,
+            }
+        )
+
+
+    # mean_params = df_sample_fits.select(pl.exclude("sample").mean()).row(0, named=True)
+    # sample_best_fit = models.Gaussian2D(**mean_params)
+    return (fit_results,)
+
+
+@app.cell
+def _(fit_results):
+    df_sample_fits = pl.DataFrame(fit_results)
+
+    df_sample_fits = (
+        pl.DataFrame(fit_results)
+        .with_columns(sigma_eff=(pl.col("x_stddev") * pl.col("y_stddev")).sqrt())
+        .with_columns(beam_diameter_1e2=pl.col("sigma_eff") * 4)
+    )
+
+    df_sample_fits
+    return (df_sample_fits,)
+
+
+@app.cell
+def _(df_sample_fits):
+    print(
+        f"Value ± std = {df_sample_fits['beam_diameter_1e2'].mean():.04f} ± {df_sample_fits['beam_diameter_1e2'].std():.04f} um "
+    )
+    print(
+        f"Value ± sem = {df_sample_fits['beam_diameter_1e2'].mean():.04f} ± {df_sample_fits['beam_diameter_1e2'].std() / math.sqrt(df_sample_fits['beam_diameter_1e2'].count()):.04f} um "
+    )
     return
 
 
