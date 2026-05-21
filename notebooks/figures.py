@@ -68,7 +68,7 @@ def _(intensity_ratios_xr):
             img_data = intensity_ratios_xr.sel(pass_num=p, m_z=mz).values
 
             img = hv.Image(img_data, kdims=['x', 'y']).opts(colorbar=False, cmap="viridis")
-        
+
             grid[mz, p] = img
 
     grid.opts(
@@ -79,7 +79,6 @@ def _(intensity_ratios_xr):
     )
 
     grid
-
 
     return
 

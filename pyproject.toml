@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "astropy>=7.2.0",
+    "auto-mix-prep>=0.2.0",
+    "bioio>=3.3.0",
+    "bioio-ome-zarr>=3.4.0",
     "dask>=2026.1.2",
     "datashader>=0.18.2",
     "h5netcdf>=1.8.1",
@@ -27,6 +30,7 @@ dependencies = [
     "selenium>=4.40.0",
     "tifffile>=2025.10.16",
     "xarray>=2025.12.0",
+    "zarr>=3.2.1",
 ]
 
 
@@ -37,3 +41,4 @@ dev = [
 
 [tool.marimo.runtime]
 output_max_bytes = 30_000_000
+pythonpath = ["."]
