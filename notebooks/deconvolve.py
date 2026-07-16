@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.5"
+__generated_with = "0.23.14"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -451,7 +451,7 @@ def _(maldi_psf_ds):
 @app.cell
 def _():
     widget_selected_dir = mo.ui.file_browser(
-        multiple=False, selection_mode="file", filetypes=[".h5"]
+        multiple=False, selection_mode="file", filetypes=[".h5"], initial_path="data"
     )
     mo.vstack(
         [
@@ -604,12 +604,6 @@ def _(result_xr):
         ]
     )
     return (export_button,)
-
-
-@app.cell
-def _(maldi_psf_ds):
-    maldi_psf_ds
-    return
 
 
 @app.cell

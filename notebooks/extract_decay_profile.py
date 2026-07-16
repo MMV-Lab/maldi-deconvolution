@@ -1,19 +1,22 @@
 import marimo
 
-__generated_with = "0.23.5"
-app = marimo.App(width="medium")
+__generated_with = "0.23.10"
+app = marimo.App(width="full")
 
 with app.setup:
     import marimo as mo
     import numpy as np
     from pyimzml.ImzMLParser import ImzMLParser
-    import hvplot
+    import warnings
+    import re
+
+    import polars as pl
     import xarray as xr
+
+    import holoviews as hv
+    import hvplot
     import hvplot.xarray
     import hvplot.polars
-    import warnings
-    import polars as pl
-    import re
 
     from scipy.optimize import curve_fit
     from scipy.signal import find_peaks
@@ -23,6 +26,16 @@ with app.setup:
     from extract_data import read_imzml_to_xarray
 
     hvplot.extension("matplotlib", "bokeh")
+    hvplot.output(fig="svg")
+
+    hv.extension('matplotlib')
+    hv.output(fig='svg')
+
+
+@app.cell
+def _():
+    hvplot.output.info()
+    return
 
 
 @app.cell
@@ -48,7 +61,7 @@ def _():
 def _(widget_selected_file):
     path_list = [i.path for i in widget_selected_file.value]
     path_list = sorted(
-        path_list, key=lambda x: int(re.search(r"(\d+)pass", x.name).group(1))
+        path_list, key=lambda x: int(re.search(r"(\d+)p(?:ass)?", x.name).group(1))
     )
 
     [i.name for i in path_list]
@@ -193,7 +206,6 @@ def _(imzml_list, path_list):
     ) as bar:
         _pass_arrays = []
         for filepath_p in path_list:
-
             _da = read_imzml_to_xarray(filepath_p, target_mzs, mz_tol)
             _pass_arrays.append(_da)
             bar.update()
@@ -329,6 +341,7 @@ def _(mean_spectrum, mz_axis, target_mzs):
 
 @app.cell
 def _():
+    _spectrum_plot * _peaks_plot
     return
 
 
@@ -351,18 +364,17 @@ def _(stats_ds):
     decay_df = pl.from_pandas(norm_ds.to_dataframe().reset_index())
     del norm_ds
     decay_df
-
-
     return decay_df, show_export_button
 
 
 @app.cell
 def _(decay_df):
     (
-        decay_df.hvplot.errorbars(x="pass_num", y="value", yerr1="error", width=400)
+        decay_df.hvplot.errorbars(
+            x="pass_num", y="value", yerr1="error", width=400
+        )
         * decay_df.hvplot.scatter(x="pass_num", y="value", s=800)
     )
-
     return
 
 
@@ -389,8 +401,8 @@ def _(decay_df, export_button, passes_xr, path_list):
     decay_df.write_csv(_out_path, float_scientific=False, float_precision=16)
 
     passes_xr.to_netcdf(
-                path_list[0].parent / f"multiple_passes_filtered.h5",
-            )
+        path_list[0].parent / f"multiple_passes_filtered.h5",
+    )
 
     mo.md(f"""Saved decay profile as `{_out_path.name}` in:
 
@@ -523,6 +535,12 @@ def _(decay_df, n_passes):
 
 
 @app.cell
+def _():
+    hvplot.output.info()
+    return
+
+
+@app.cell
 def _(results_dict):
     results_dict
     return
@@ -530,10 +548,7 @@ def _(results_dict):
 
 @app.cell
 def _(decay_df, fit_ds):
-    df_pd = decay_df.to_pandas()
-
-
-    error_bars = df_pd.hvplot.errorbars(
+    error_bars = decay_df.hvplot.errorbars(
         x="pass_num",
         y="value",
         yerr1="error",
@@ -542,7 +557,7 @@ def _(decay_df, fit_ds):
         width=400,
     )
 
-    scatter_plot = df_pd.hvplot.scatter(
+    scatter_plot = decay_df.hvplot.scatter(
         x="pass_num",
         y="value",
         label="Observed (w/ Std Dev)",

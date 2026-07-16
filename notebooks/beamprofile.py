@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.1"
+__generated_with = "0.23.10"
 app = marimo.App(width="columns")
 
 with app.setup:
@@ -40,6 +40,11 @@ def _():
     widget_selected_file = mo.ui.file_browser(filetypes=[".cma"], multiple=True)
     mo.vstack([mo.md("# Select `cma` file"), widget_selected_file])
     return (widget_selected_file,)
+
+
+@app.cell
+def _():
+    return
 
 
 @app.cell
@@ -162,6 +167,10 @@ def _(X, Y, avg_img, fitter, x_coords, y_coords):
 def _(X, Y, avg_img, global_best_fit, std_img):
     hv.extension("matplotlib")
 
+    # Define the dimensions with units
+    x_dim = hv.Dimension("x", label=r"x ($\mu$m)")
+    y_dim = hv.Dimension("y", label=r"y ($\mu$m)")
+
     x_center = global_best_fit.x_mean.value
     y_center = global_best_fit.y_mean.value
 
@@ -182,12 +191,12 @@ def _(X, Y, avg_img, global_best_fit, std_img):
 
     # Main Plot: Original Image + Fit Contours
     img = hv.Image(
-        (x_vals, y_vals, avg_img.values), kdims=["x", "y"], vdims=["Intensity"]
+        (x_vals, y_vals, avg_img.values), kdims=[x_dim, y_dim], vdims=["Intensity"]
     )
 
     fit_img = hv.Image(
         (x_vals, y_vals, global_best_fit(X, Y)),
-        kdims=["x", "y"],
+        kdims=[x_dim, y_dim],
         vdims=["Intensity"],
     )
     contours = hv.operation.contours(fit_img, levels=6)
@@ -195,27 +204,27 @@ def _(X, Y, avg_img, global_best_fit, std_img):
 
     # Top Pane: X-profile (Data + Errors + Fit)
     top_scatter = hv.Scatter(
-        (x_vals, x_data_prof), kdims=["x"], vdims=["Intensity"]
+        (x_vals, x_data_prof), kdims=[x_dim], vdims=["Intensity"]
     )
     top_errs = hv.ErrorBars(
         (x_vals, x_data_prof, x_err_prof),
-        kdims=["x"],
+        kdims=[x_dim],
         vdims=["Intensity", "Error"],
     )
-    top_fit = hv.Curve((x_vals, x_fit_prof), kdims=["x"], vdims=["Intensity"])
+    top_fit = hv.Curve((x_vals, x_fit_prof), kdims=[x_dim], vdims=["Intensity"])
 
     top_plot = top_scatter * top_errs * top_fit
 
     # Right Pane: Y-profile (Data + Errors + Fit)
     right_scatter = hv.Scatter(
-        (y_vals, y_data_prof), kdims=["y"], vdims=["Intensity"]
+        (y_vals, y_data_prof), kdims=[y_dim], vdims=["Intensity"]
     )
     right_errs = hv.ErrorBars(
         (y_vals, y_data_prof, y_err_prof),
-        kdims=["y"],
+        kdims=[y_dim],
         vdims=["Intensity", "Error"],
     )
-    right_fit = hv.Curve((y_vals, y_fit_prof), kdims=["y"], vdims=["Intensity"])
+    right_fit = hv.Curve((y_vals, y_fit_prof), kdims=[y_dim], vdims=["Intensity"])
 
     right_plot = right_scatter * right_errs * right_fit
 
@@ -235,6 +244,12 @@ def _(X, Y, avg_img, global_best_fit, std_img):
 @app.cell
 def _(layout):
     hv.render(layout)
+    return
+
+
+@app.cell
+def _(layout, path_list):
+    hv.save(layout, f"{path_list[0].parent.parent}.svg", fmt="svg", dpi=1200)
     return
 
 

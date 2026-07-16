@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.5"
+__generated_with = "0.23.13"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -162,7 +162,9 @@ def _():
 
 @app.cell
 def _():
-    widget_selected_file = mo.ui.file_browser(filetypes=[".imzml"], multiple=False)
+    widget_selected_file = mo.ui.file_browser(
+        filetypes=[".imzml"], multiple=False
+    )
     mo.vstack([mo.md("# Select `imzml` file"), widget_selected_file])
     return (widget_selected_file,)
 
@@ -198,20 +200,25 @@ def _(filepath):
 
 
 @app.cell
-def _(max_mz_global, min_mz_global):
+def _():
     _tol_steps = np.round(
-        np.r_[1e-3:1e-2:1e-3, 1e-2:1e-1:1e-2, 1e-1:1.1:1e-1, 1:11:1, 10:110:10],
+        np.r_[
+            1e-3:1e-2:1e-3, 1e-2:1e-1:1e-2, 1e-1:1.1:1e-1, 1:11:1, 10:110:10
+        ],
         decimals=3,
     )
 
-    slider_single_mz = mo.ui.slider(
-        start=min_mz_global,
-        stop=max_mz_global,
-        step=0.01,
-        value=((max_mz_global - min_mz_global) // 2) + min_mz_global,
-        include_input=True,
-        label="Target m/z",
-    )
+    # slider_single_mz = mo.ui.slider(
+    #     start=min_mz_global,
+    #     stop=max_mz_global,
+    #     step=0.01,
+    #     value=((max_mz_global - min_mz_global) // 2) + min_mz_global,
+    #     include_input=True,
+    #     label="Target m/z",
+    # )
+
+    text_single_mz = mo.ui.text(kind="text", label="Single m/z:")
+
     slider_tol = mo.ui.slider(
         steps=_tol_steps, value=0.0050, show_value=True, label="Tolerance"
     )
@@ -222,30 +229,98 @@ def _(max_mz_global, min_mz_global):
         multiple=False,
     )
 
+    widget_use_folder_csv = mo.ui.run_button(
+        label="Use CSV from selected file folder"
+    )
+
     _instructions = mo.md(
         """
 
+        ---
+
         Click the button below and select a single .csv file.
 
-        The file must contain m/z values in a single column, have no header, and use a dot (`.`) as the decimal separator."""
+        The file must contain m/z values in a single column, have no header, and use a dot (`.`) as the decimal separator.
+
+
+        """
     )
 
     widget_tab_mz = mo.ui.tabs(
         tabs={
             "Multiple m/z": mo.vstack(
-                [slider_tol, _instructions, widget_csv_upload], heights="equal"
+                [
+                    slider_tol,
+                    _instructions,
+                    widget_csv_upload,
+                    mo.md(
+                        "--- \n Or automatically use the only `.csv` in the same folder as the selected `.imzml` file:"
+                    ),
+                    widget_use_folder_csv,
+                ],
+                heights="equal",
             ),
-            "Single m/z": mo.vstack([slider_tol, slider_single_mz]),
+            "Single m/z": mo.vstack([slider_tol, text_single_mz]),
         }
     )
 
     widget_tab_mz
-    return slider_single_mz, slider_tol, widget_csv_upload, widget_tab_mz
+    return (
+        slider_tol,
+        text_single_mz,
+        widget_csv_upload,
+        widget_tab_mz,
+        widget_use_folder_csv,
+    )
 
 
 @app.cell
-def _(widget_csv_upload):
+def _(filepath, widget_csv_upload, widget_use_folder_csv):
     mz_list_from_csv = None
+    mz_csv_source = None
+
+    if widget_use_folder_csv.value:
+        if filepath is None:
+            mo.output.append(
+                mo.md("Select an `.imzml` file first.").callout(kind="warn")
+            )
+        else:
+            _csv_candidates = sorted(filepath.parent.glob("*.csv"))
+
+            if len(_csv_candidates) == 1:
+                try:
+                    _df = pl.read_csv(
+                        source=_csv_candidates[0],
+                        has_header=False,
+                        new_columns=["m_z"],
+                    )
+                    mz_list_from_csv = _df["m_z"].cast(pl.Float64).to_list()
+                    mz_csv_source = _csv_candidates[0].name
+                    mo.output.append(
+                        mo.md(
+                            f"Using CSV from folder: `{mz_csv_source}`"
+                        ).callout(kind="success")
+                    )
+                except Exception as e:
+                    mo.output.append(
+                        mo.md(
+                            f"Error reading CSV `{_csv_candidates[0].name}`: `{e}`"
+                        ).callout(kind="danger")
+                    )
+            elif len(_csv_candidates) == 0:
+                mo.output.append(
+                    mo.md(
+                        f"No `.csv` file found in `{filepath.parent}`."
+                    ).callout(kind="warn")
+                )
+            else:
+                _names = ", ".join(_p.name for _p in _csv_candidates)
+                mo.output.append(
+                    mo.md(
+                        "Expected exactly one `.csv` in the selected file folder, "
+                        f"but found `{len(_csv_candidates)}`: `{_names}`"
+                    ).callout(kind="warn")
+                )
 
     if len(widget_csv_upload.value) == 1:
         try:
@@ -255,21 +330,24 @@ def _(widget_csv_upload):
                 new_columns=["m_z"],
             )
             mz_list_from_csv = _df["m_z"].cast(pl.Float64).to_list()
+            mz_csv_source = widget_csv_upload.value[0].name
 
         except Exception as e:
             mo.output.append(
                 mo.md(f"Error reading CSV: `{e}`").callout(kind="danger")
             )
             mz_list_from_csv = None
-    return (mz_list_from_csv,)
+            mz_csv_source = None
+    return mz_csv_source, mz_list_from_csv
 
 
 @app.cell
 def _(
     is_script_mode,
+    mz_csv_source,
     mz_list_from_csv,
-    slider_single_mz,
     slider_tol,
+    text_single_mz,
     widget_tab_mz,
 ):
     m_z_values = []
@@ -287,9 +365,10 @@ def _(
         elif "mz" in _args:
             m_z_values = [float(_args["mz"])]
         else:
-            m_z_values = [slider_single_mz.value]
+            # m_z_values = [slider_single_mz.value]
+            m_z_values = [float(text_single_mz.value)]
     elif widget_tab_mz.value == "Single m/z":
-        m_z_values = [slider_single_mz.value]
+        m_z_values = [float(text_single_mz.value)]
         mo.output.append(
             mo.md(
                 f"**Single m/z mode selected.** Processing: `{m_z_values[0]:.4f}`"
@@ -299,9 +378,10 @@ def _(
     elif widget_tab_mz.value == "Multiple m/z":
         if mz_list_from_csv:
             m_z_values = mz_list_from_csv
+            _src = mz_csv_source or "uploaded CSV"
             mo.output.append(
                 mo.md(
-                    f"**Multiple m/z mode selected.** Found `{len(m_z_values)}` m/z values in CSV."
+                    f"**Multiple m/z mode selected.** Found `{len(m_z_values)}` m/z values in `{_src}`."
                 ).callout(kind="success")
             )
         else:
@@ -358,10 +438,8 @@ def _(ion_image_xr):
     _pixel_size_x = ion_image_xr.attrs["pixel_size_x"]
     _pixel_size_y = ion_image_xr.attrs["pixel_size_y"]
 
-
     if _pixel_size_x != _pixel_size_y:
         mo.output.append(mo.md("Pixels are not square").callout(kind="warn"))
-
 
     mo.output.append(
         mo.vstack(
@@ -402,7 +480,6 @@ def _(export_button, filepath, ion_image_xr, is_script_mode):
         "original_" + datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     )
     out_dir.mkdir(exist_ok=True, parents=True)
-
 
     with mo.status.spinner(
         title="Saving...", subtitle="This should take 1-2 minutes"

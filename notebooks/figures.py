@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.5"
+__generated_with = "0.23.10"
 app = marimo.App(width="full")
 
 with app.setup(hide_code=True):
@@ -79,7 +79,6 @@ def _(intensity_ratios_xr):
     )
 
     grid
-
     return
 
 
@@ -198,6 +197,8 @@ def _():
 
 @app.cell
 def _():
+    hv.extension("matplotlib")
+
     _base = Path(
         "/mnt/eternus/users/Davide/maldi-deconv-rl/data/decay_curve/SMALDI 5/Cerebellum"
     )
@@ -248,6 +249,12 @@ def _():
     )
 
     decay_overlay
+    return (decay_overlay,)
+
+
+@app.cell
+def _(decay_overlay):
+    hv.save(decay_overlay, r"data/figures/fig2/Panel_D_decay_curves_cerebellum.svg" )
     return
 
 

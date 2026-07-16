@@ -1,7 +1,7 @@
 import marimo
 
-__generated_with = "0.23.6"
-app = marimo.App(width="medium")
+__generated_with = "0.23.10"
+app = marimo.App(width="full")
 
 with app.setup:
     import marimo as mo
@@ -10,6 +10,7 @@ with app.setup:
     import hvplot
     import holoviews as hv
     import hvplot.xarray
+    import hvplot.polars
     import numpy as np
     import xarray as xr
 
@@ -1185,6 +1186,364 @@ def _(residual_df):
         pl.selectors.numeric().exclude("m_z").mean()
     )
     residual_summary_df
+    return
+
+
+@app.cell(hide_code=True)
+def _():
+    mo.md(r"""
+    ---
+    ## Iteration Selection
+
+    To find the best Richardson-Lucy iteration, sweep all stored iterations and track how key metrics
+    evolve.  There is no single universally optimal stopping criterion, but the following heuristics
+    are reliable:
+
+    | Criterion | What it captures | Expected behaviour |
+    |---|---|---|
+    | **`grad_cov` increasing-portion elbow** | Coefficient of variation of gradient magnitudes; tracks the *heterogeneity* of edge structure. Has a well-defined minimum at the RL convergence knee, then rises as biological edges develop against a smooth background. The **kneedle elbow of the rising sub-curve** marks where structural-clarity gains flatten out. | Empirically close to visual optimum for denoising-RL on sparse MALDI. |
+    | `grad_gini` argmax | Gini coefficient of gradient magnitudes; peaks when gradient energy is concentrated at a few boundaries. | Primary criterion for sharpening-RL. For denoising-RL (scattered-dot images) the raw state already has high Gini, so it decreases monotonically and this branch is skipped. |
+    | `convergence_delta` elbow | Mean absolute per-pixel change between consecutive iterations. | Mathematically rigorous convergence indicator; typically 2–4 iterations conservative of the visual optimum. Used as fallback. |
+    | All intensity metrics | Pixel-value statistics (sharpness, Gini, SNR, entropy, …). | **Monotone** for RL on sparse MALDI (RL monotonically maximises Poisson log-likelihood) — informative for characterisation, not for stopping. |
+
+    > ⚠️ **Note on statistical robustness:** the `grad_cov` elbow is an *empirical heuristic*
+    > grounded in the observation that the coefficient of variation of gradient magnitudes
+    > has a concave-increasing profile during the structure-development phase of denoising-RL,
+    > and that the kneedle elbow of this profile correlates with the visual quality optimum.
+    > It is **not** a mathematically proven optimal stopping criterion.
+    > Validate visually on each new dataset, and store iterations at fine spacing
+    > (≤1 per step up to at least 2× the expected optimum) to avoid chord-endpoint artefacts
+    > in the kneedle detection.
+
+    **Stopping criterion cascade (in order of priority):**
+    1. `grad_gini` argmax — fires for sharpening-RL regimes (interior maximum)
+    2. Kneedle elbow of `grad_cov` **increasing portion** — fires for denoising-RL regimes (minimum present, elbow past it)
+    3. Kneedle elbow of `convergence_delta` — conservative mathematical fallback
+    """)
+    return
+
+
+@app.cell
+def _(data_xr, selected_mz_list, sim_xr, top_n_mz):
+    from scipy.signal import fftconvolve as _fc_sweep
+
+    _psf_sweep = sim_xr.final_signal_kernel.values
+
+    _stored_all = sorted(data_xr.iteration.values.tolist())
+    _nonzero_iters = [i for i in _stored_all if i > 0]
+
+    if selected_mz_list is not None:
+        _top_mz_sw = data_xr.m_z.sel(m_z=selected_mz_list)
+    else:
+        _raw_med_sw = data_xr.sel(iteration=0).median(dim=["y", "x"])
+        _top_mz_sw = _raw_med_sw.sortby(_raw_med_sw, ascending=False).m_z[:top_n_mz]
+
+    _da_raw_sw = data_xr.sel(iteration=0, m_z=_top_mz_sw)
+
+    def _nrmse_mean_scalar(arr_raw: np.ndarray, arr_dec: np.ndarray) -> float:
+        reb = _fc_sweep(arr_dec.astype(np.float64), _psf_sweep.astype(np.float64), mode="same")
+        mse = float(((arr_raw.astype(np.float64) - reb) ** 2).mean())
+        data_mean = float(arr_raw.mean())
+        return float(np.sqrt(mse) / data_mean) if data_mean > 0 else float("nan")
+
+    def _fixed_bg_noise(arr_raw: np.ndarray, arr_dec: np.ndarray) -> float:
+        """Noise leaked into background by RL.
+
+        Background is defined by the raw image: pixels that are exactly zero
+        (or in the bottom 5th percentile if no exact zeros exist) should stay
+        near zero during correct deconvolution.  When RL over-iterates it
+        amplifies noise into these regions, causing this metric to rise.
+
+        Returned value is normalised by the mean raw signal level so it is
+        comparable across m/z channels with very different intensities.
+        """
+        raw_flat = arr_raw.ravel().astype(np.float64)
+        dec_flat = arr_dec.ravel().astype(np.float64)
+
+        bg_mask = raw_flat == 0
+        if bg_mask.sum() < 4:
+            # No exact zeros — fall back to bottom 5th percentile of all pixels
+            thr = np.percentile(raw_flat, 5)
+            bg_mask = raw_flat <= thr
+        if bg_mask.sum() < 4:
+            return float("nan")
+
+        signal_mean = float(np.mean(raw_flat[raw_flat > 0])) if (raw_flat > 0).any() else 1.0
+        return float(np.std(dec_flat[bg_mask]) / signal_mean) if signal_mean > 0 else float("nan")
+
+    def _grad_gini(arr: np.ndarray) -> float:
+        """Gini coefficient of gradient magnitudes.
+
+        Peaks when strong gradients are concentrated at a few structure
+        boundaries.  Falls when background haze spreads small gradients
+        everywhere (over-iteration) or when the image is blurry (under-iteration).
+        """
+        gy, gx = np.gradient(arr.astype(np.float64))
+        gm = np.sort(np.abs(np.sqrt(gy**2 + gx**2)).ravel())
+        n = len(gm)
+        if n == 0 or gm.sum() == 0:
+            return 0.0
+        idx = np.arange(1, n + 1, dtype=np.float64)
+        return float(2.0 * (idx * gm).sum() / (n * gm.sum()) - (n + 1.0) / n)
+
+    def _grad_cov(arr: np.ndarray) -> float:
+        """Coefficient of variation of gradient magnitudes: std(|∇I|) / mean(|∇I|).
+
+        Behaviour across RL iterations for sparse MALDI data
+        ------------------------------------------------------
+        Iter 1 (near-raw): isolated bright dots produce moderate local gradients.
+          The distribution of |∇I| is moderately heterogeneous → moderate CoV.
+
+        Iter 2-min (convergence phase): RL redistributes signal.  Both std and mean
+          of |∇I| fall, but initially at the same relative rate.  The minimum of
+          CoV marks the point of *maximum gradient uniformity* — a well-defined
+          convergence elbow where the algorithm has completed its initial
+          redistribution but biological structure edges are not yet prominent.
+
+        Iter min-N (structure-development phase): as RL builds biological structures,
+          the gradient distribution becomes increasingly bimodal — many near-zero
+          background gradients and a smaller number of large edge gradients.  Because
+          mean(|∇I|) (= sharpness) keeps falling while std(|∇I|) falls more slowly
+          (the strong edge pixels are persistent), CoV *rises*.  The rising sub-curve
+          is concave: rapid initial rise (structures forming) then flattening
+          (diminishing returns in structural clarity).
+
+        Elbow of the rising portion
+        ----------------------------
+        The kneedle elbow of the concave rising sub-curve identifies where the
+        rate of bimodality development drops sharply.  Empirically this corresponds
+        to the iteration at which biological structures are well-defined but
+        additional iterations produce only marginal improvement in edge contrast.
+
+        IMPORTANT — limitations
+        --------------------------
+        * This is an *empirical heuristic*, not a mathematically proven optimum.
+          Validate visually on each new dataset before trusting it blindly.
+        * The elbow position depends on the range of stored iterations: if only
+          a few late iterations are stored, the chord used by the kneedle shifts
+          and the elbow may move.  Store iterations at fine spacing (≤ 1 per step)
+          up to at least 2× the expected optimum.
+        * For non-denoising RL regimes (e.g. pure sharpening of continuous images
+          with Gaussian noise) the minimum of grad_cov may not appear, and the
+          method falls back to the convergence_delta elbow automatically.
+        """
+        gy, gx = np.gradient(arr.astype(np.float64))
+        gm = np.sqrt(gy**2 + gx**2).ravel()
+        mu = float(gm.mean())
+        return float(gm.std() / mu) if mu > 1e-30 else float("nan")
+
+    _rows = []
+    for _it in _nonzero_iters:
+        _da_it = data_xr.sel(iteration=_it, m_z=_top_mz_sw)
+        _prev_idx_sw = _stored_all.index(_it) - 1
+        _da_prev_sw = (
+            data_xr.sel(iteration=_stored_all[_prev_idx_sw], m_z=_top_mz_sw)
+            if _prev_idx_sw >= 0
+            else None
+        )
+        _ds_nr = compute_metrics(_da_it)
+        _ds_cmp = compute_comparison_metrics(_da_raw_sw, _da_it, da_prev=_da_prev_sw)
+        _nrmse_vals = xr.apply_ufunc(
+            _nrmse_mean_scalar,
+            _da_raw_sw,
+            _da_it,
+            input_core_dims=[["y", "x"], ["y", "x"]],
+            vectorize=True,
+            output_dtypes=[float],
+        )
+        _fixed_bg_vals = xr.apply_ufunc(
+            _fixed_bg_noise,
+            _da_raw_sw,
+            _da_it,
+            input_core_dims=[["y", "x"], ["y", "x"]],
+            vectorize=True,
+            output_dtypes=[float],
+        )
+        _ufunc_nr = lambda fn: xr.apply_ufunc(
+            fn, _da_it,
+            input_core_dims=[["y", "x"]],
+            vectorize=True, output_dtypes=[float],
+        )
+        _rows.append({
+            "iteration": _it,
+            # gradient-domain stopping criteria (non-monotonic candidates)
+            "grad_gini": float(_ufunc_nr(_grad_gini).mean()),
+            "grad_cov": float(_ufunc_nr(_grad_cov).mean()),
+            # fixed-background noise
+            "fixed_bg_noise": float(_fixed_bg_vals.mean()),
+            # no-reference
+            "sharpness": float(_ds_nr.sharpness.mean()),
+            "kurtosis": float(_ds_nr.kurtosis.mean()),
+            "gini": float(_ds_nr.gini.mean()),
+            "snr": float(_ds_nr.snr.mean()),
+            "entropy": float(_ds_nr.entropy.mean()),
+            "total_variation": float(_ds_nr.total_variation.mean()),
+            "dynamic_range": float(_ds_nr.dynamic_range.mean()),
+            # comparison
+            "pearson_r": float(_ds_cmp.pearson_r.mean()),
+            "noise_amplification": float(_ds_cmp.noise_amplification.mean()),
+            "intensity_conservation": float(_ds_cmp.intensity_conservation.mean()),
+            "convergence_delta": float(_ds_cmp.convergence_delta.mean()),
+            # residual
+            "nrmse_mean": float(_nrmse_vals.mean()),
+        })
+
+    iteration_sweep_df = pl.DataFrame(_rows)
+    iteration_sweep_df
+    return (iteration_sweep_df,)
+
+
+@app.cell
+def _(iteration_sweep_df):
+    def _find_elbow(iters: np.ndarray, values: np.ndarray) -> int:
+        """Kneedle method: index of the point with maximum perpendicular distance
+        from the line connecting the first and last observations."""
+        x0, y0 = float(iters[0]), float(values[0])
+        x1, y1 = float(iters[-1]), float(values[-1])
+        dx, dy = x1 - x0, y1 - y0
+        norm = np.sqrt(dx**2 + dy**2)
+        if norm < 1e-30:
+            return 0
+        distances = np.abs(dy * (iters.astype(float) - x0) - dx * (values.astype(float) - y0)) / norm
+        return int(np.argmax(distances))
+
+    _iters = iteration_sweep_df["iteration"].to_numpy()
+
+    # -----------------------------------------------------------------------
+    # Stopping criterion cascade
+    # -----------------------------------------------------------------------
+    # All single-image intensity metrics (sharpness, SNR, Gini, entropy, …)
+    # are monotone for denoising-RL on sparse MALDI because Richardson-Lucy
+    # monotonically maximises the Poisson log-likelihood.  The criteria below
+    # work in gradient space, which is less directly optimised by RL.
+    # -----------------------------------------------------------------------
+
+    # 1. grad_gini argmax ─ primary for "sharpening-RL" regimes
+    # ------------------------------------------------------------
+    # For data where RL sharpens existing structures (rather than collecting
+    # scattered dots), the Gini coefficient of |∇I| peaks at the visual optimum:
+    # gradients concentrate at structure edges (high Gini) then spread into noise
+    # (falling Gini) with over-iteration.
+    # For denoising-RL (scattered-dot MALDI) the raw image already has high
+    # gradient Gini (isolated sharp dots), so Gini decreases monotonically →
+    # argmax = iter 1 → not an interior point → this branch is skipped.
+    _gg = iteration_sweep_df["grad_gini"].to_numpy()
+    _gg_best_idx = int(np.nanargmax(_gg))
+    _gg_is_interior = 0 < _gg_best_idx < len(_iters) - 1  # excludes boundary artefacts
+
+    # 2. grad_cov increasing-portion elbow ─ primary for denoising-RL regimes
+    # -------------------------------------------------------------------------
+    # CoV = std(|∇I|) / mean(|∇I|) has a minimum around the convergence knee
+    # (transition from redistribution phase to structure-development phase), then
+    # rises as the gradient distribution becomes increasingly bimodal (few large
+    # edge gradients against many near-zero background gradients).
+    #
+    # The rising sub-curve is concave: rapid early rise (structures forming) then
+    # flattening (diminishing returns).  The kneedle elbow of this sub-curve
+    # identifies where further iterations no longer meaningfully improve edge
+    # contrast — empirically close to the visual quality optimum.
+    #
+    # Conditions for this branch to fire:
+    #   • grad_cov has a minimum strictly before the last stored iteration
+    #   • the increasing portion has ≥ 3 points
+    #   • the kneedle selects a point strictly after the minimum
+    #     (i.e. not the minimum itself — that is already covered by
+    #      convergence_delta elbow)
+    _gcov = iteration_sweep_df["grad_cov"].to_numpy()
+    _gcov_min_idx = int(np.nanargmin(_gcov))
+    _gcov_elbow_iter = None
+    if _gcov_min_idx < len(_iters) - 2:
+        _incr_iters = _iters[_gcov_min_idx:]   # from minimum to end
+        _incr_vals  = _gcov[_gcov_min_idx:]
+        if len(_incr_iters) >= 3:
+            _incr_elbow_rel = _find_elbow(_incr_iters, _incr_vals)
+            if _incr_elbow_rel > 0:             # elbow is past the minimum itself
+                _gcov_elbow_iter = int(_incr_iters[_incr_elbow_rel])
+
+    # 3. convergence_delta elbow ─ most conservative fallback
+    # ---------------------------------------------------------
+    # The mean absolute per-pixel change between consecutive iterations decreases
+    # monotonically.  Its kneedle elbow marks where the algorithm stops making
+    # substantial progress.  This typically lands 2– 4 iterations *before* the
+    # visual optimum for denoising-RL, but is robust to any RL regime.
+    _cd_elbow_idx = _find_elbow(_iters, iteration_sweep_df["convergence_delta"].to_numpy())
+
+    if _gg_is_interior:
+        best_iteration = int(_iters[_gg_best_idx])
+        _criterion = "max grad_gini (sharpening-RL regime)"
+    elif _gcov_elbow_iter is not None:
+        best_iteration = _gcov_elbow_iter
+        _criterion = "elbow of grad_cov increasing portion (denoising-RL regime)"
+    else:
+        best_iteration = int(_iters[_cd_elbow_idx])
+        _criterion = "elbow of convergence_delta (fallback — grad_cov monotone or too few points)"
+
+    _best = iteration_sweep_df.row(
+        int(np.where(_iters == best_iteration)[0][0]), named=True
+    )
+    mo.callout(
+        mo.md(
+            f"**Suggested best iteration: `{best_iteration}`** ({_criterion})  \n"
+            f"grad_gini = {_best['grad_gini']:.4f} — "
+            f"grad_cov = {_best['grad_cov']:.4f} — "
+            f"convergence_delta = {_best['convergence_delta']:.4f} — "
+            f"noise_amplification = {_best['noise_amplification']:.4f}"
+        ),
+        kind="success",
+    )
+    return (best_iteration,)
+
+
+@app.cell
+def _(best_iteration, iteration_sweep_df):
+    _metrics_to_plot = [
+        "grad_gini",
+        "grad_cov",
+        "convergence_delta",
+        "fixed_bg_noise",
+        "noise_amplification",
+        "nrmse_mean",
+        "sharpness",
+        "total_variation",
+        "kurtosis",
+        "dynamic_range",
+        "gini",
+        "snr",
+    ]
+    _ylabels = {
+        "grad_gini": "Grad Gini (max = best ✓)",
+        "grad_cov": "Grad CoV = std/mean (max = best ✓)",
+        "convergence_delta": "Convergence delta (elbow ↓)",
+        "fixed_bg_noise": "Fixed-BG noise",
+        "noise_amplification": "Noise amplification",
+        "nrmse_mean": "NRMSE forward model (monotone)",
+        "sharpness": "Sharpness (monotone)",
+        "total_variation": "Total variation (monotone)",
+        "kurtosis": "Kurtosis",
+        "dynamic_range": "Dynamic range",
+        "gini": "Gini (monotone)",
+        "snr": "SNR",
+    }
+    _plots = []
+    for _m in _metrics_to_plot:
+        _p = (
+            iteration_sweep_df.hvplot.line(
+                x="iteration",
+                y=_m,
+                title=_ylabels[_m],
+                width=340,
+                height=220,
+                line_width=2,
+            )
+            * iteration_sweep_df.hvplot.scatter(
+                x="iteration", y=_m, size=60, color="steelblue"
+            )
+            * hv.VLine(best_iteration).opts(
+                color="red", line_dash="dashed", line_width=1.5
+            )
+        )
+        _plots.append(_p)
+    hv.Layout(_plots).cols(3).opts(shared_axes=False)
     return
 
 

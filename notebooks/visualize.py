@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.5"
+__generated_with = "0.23.13"
 app = marimo.App(width="full")
 
 with app.setup:
@@ -35,7 +35,9 @@ def _():
 
 @app.cell
 def _():
-    widget_selected_file = mo.ui.file_browser(filetypes=[".h5"], multiple=False, initial_path="data")
+    widget_selected_file = mo.ui.file_browser(
+        filetypes=[".h5"], multiple=False, initial_path="data"
+    )
     mo.vstack(
         [
             mo.md(
@@ -53,6 +55,10 @@ def _(widget_selected_file):
         input_file = widget_selected_file.value[0].path
         out_dir = input_file.parent
         data_xr = xr.open_dataarray(input_file)
+        if "X" in data_xr.dims:
+            data_xr = data_xr.rename({"X": "x"})
+        if "Y" in data_xr.dims:
+            data_xr = data_xr.rename({"Y": "y"})
         mo.output.append(
             mo.md(
                 f"""Correctly loaded `{input_file.name}` from 
@@ -70,7 +76,14 @@ def _():
 
 @app.cell
 def _():
-    colormap_names = ["viridis", "plasma", "inferno", "magma", "cividis", "gray"]
+    colormap_names = [
+        "viridis",
+        "plasma",
+        "inferno",
+        "magma",
+        "cividis",
+        "gray",
+    ]
     colormap_names.extend(
         [
             "Greys",
@@ -113,8 +126,6 @@ def _():
             )
         else:
             cmap_dict[name] = mpl.colormaps[name]
-
-    # cmap_dict
     return cmap_dict, colormap_names
 
 
@@ -151,7 +162,7 @@ def _(cmap_dict, data_xr, out_dir):
         else ["viridis", "plasma", "Blues", "RdBu_r"]
     )
     cmap_widget = pn.widgets.Select(
-        name="Colormap", options=_cmap_list, value="inferno"
+        name="Colormap", options=_cmap_list, value="viridis"
     )
 
     save_button = pn.widgets.Button(
@@ -166,13 +177,14 @@ def _(cmap_dict, data_xr, out_dir):
 
     status_text = pn.widgets.StaticText(value="")
 
-
     def get_image_plot(m_z, iteration, low_p, high_p, cmap_name):
 
         if has_iteration and iteration is not None:
             slice_data = data_xr.sel(m_z=m_z, iteration=iteration)
+            title = f"m/z = {m_z:.4f} , iteration = {iteration}"
         else:
             slice_data = data_xr.sel(m_z=m_z)
+            title = f"m/z = {m_z:.4f}"
 
         v_min, v_max = np.nanpercentile(slice_data.values, [low_p, high_p])
 
@@ -180,7 +192,8 @@ def _(cmap_dict, data_xr, out_dir):
             v_max = v_min + 1e-6
 
         _aspect = float(
-            data_xr.attrs.get("pixel_size_y") / data_xr.attrs.get("pixel_size_x")
+            data_xr.attrs.get("pixel_size_y")
+            / data_xr.attrs.get("pixel_size_x")
         )
 
         return slice_data.hvplot.image(
@@ -193,8 +206,8 @@ def _(cmap_dict, data_xr, out_dir):
             cmap=cmap_name,
             colorbar=True,
             responsive=False,
+            title=title,
         ).opts(invert_yaxis=True)
-
 
     def export_datacube_tiff(event):
         status_text.value = "⏳ Exporting TIFFs... please wait."
@@ -204,7 +217,9 @@ def _(cmap_dict, data_xr, out_dir):
             # 1. Metadata Extraction
             pixel_size_x = data_xr.attrs.get("pixel_size_x", 1.0)
             pixel_size_y = data_xr.attrs.get("pixel_size_y", 1.0)
-            original_file_name = data_xr.attrs.get("original_file_name", "data")
+            original_file_name = data_xr.attrs.get(
+                "original_file_name", "data"
+            )
             tolerance = data_xr.attrs.get("tolerance", 0.0)
 
             tiff_dir = out_dir / "exported_datacube"
@@ -253,12 +268,9 @@ def _(cmap_dict, data_xr, out_dir):
         finally:
             export_tiff_button.disabled = False
 
-
     def save_plot(event):
         save_button.disabled = True
-        status_text.value = (
-            "⏳ Saving high-res plots (SVG/PNG) and raw data with RGB TIFF..."
-        )
+        status_text.value = "⏳ Saving high-res plots (SVG/PNG), RGB TIFF, and raw slice TIFF..."
 
         try:
             # ============= PLOTS
@@ -285,9 +297,9 @@ def _(cmap_dict, data_xr, out_dir):
             svg_path = out_dir / f"{base_name}.svg"
             png_path = out_dir / f"{base_name}.png"
 
-            hv.save(current_plot, svg_path, backend="matplotlib", dpi=1200)
+            hv.save(current_plot, svg_path, backend="matplotlib", dpi=600)
 
-            hv.save(current_plot, png_path, backend="matplotlib", dpi=1200)
+            hv.save(current_plot, png_path, backend="matplotlib", dpi=600)
 
             # ============= TIFF
 
@@ -323,9 +335,27 @@ def _(cmap_dict, data_xr, out_dir):
                 },
             )
 
-            status_text.value = (
-                "✅ Successfully saved SVG, PNG, and RGB-TIFF to output folder."
+            # Save the raw numeric slice (float32), similar to the datacube export.
+            raw_slice = (
+                data_xr.sel(m_z=m_z_widget.value, iteration=iter_val)
+                if iter_val is not None
+                else data_xr.sel(m_z=m_z_widget.value)
             )
+            raw_tiff_path = out_dir / f"{base_name}_raw.tiff"
+            tifffile.imwrite(
+                raw_tiff_path,
+                raw_slice.values.astype(np.float32),
+                imagej=True,
+                compression="zlib",
+                photometric="minisblack",
+                resolution=(1 / pixel_size_x, 1 / pixel_size_y),
+                metadata={
+                    "axes": "YX",
+                    "unit": "um",
+                },
+            )
+
+            status_text.value = "✅ Successfully saved SVG, PNG, RGB-TIFF, and raw slice TIFF to output folder."
 
         except Exception as e:
             status_text.value = f"❌ Error saving plot: {str(e)}"
@@ -376,7 +406,6 @@ def _(
     save_button.on_click(save_plot)
     export_tiff_button.on_click(export_datacube_tiff)
 
-
     interactive_fn = pn.bind(
         get_image_plot,
         m_z=m_z_widget,
@@ -419,9 +448,6 @@ def _():
 
 @app.cell
 def _(data_xr, mz_options):
-    # NEW MULTICHANNEL TEST
-
-    # temp order top 3 mzs
     _tmp = data_xr.isel(iteration=-1).median(dim=["x", "y"])
     _mz_intensity_map = dict(zip(_tmp.m_z.values, _tmp.values))
     _sorted_keys = sorted(
@@ -433,11 +459,9 @@ def _(data_xr, mz_options):
     # 3. Access your top 3
     _top_3_keys = _sorted_keys[:3]
 
-
     m_z_multichannel = mo.ui.multiselect(
         mz_options, value=_top_3_keys, label="m/z:"
     )
-
 
     iteration_multichannel = mo.ui.slider(
         steps=data_xr.iteration.values,
@@ -455,7 +479,9 @@ def _(cmap_dict, m_z_multichannel):
     colormap_multichannel = mo.ui.array(
         [
             mo.ui.dropdown(
-                options=cmap_dict, searchable=True, label=f"Ch{i} (m/z {el})"
+                options=cmap_dict,
+                searchable=True,
+                label=f"Ch{i} (m/z {el:.4f})",
             )
             for i, el in enumerate(m_z_multichannel.value)
         ]
@@ -511,13 +537,13 @@ def _(
     low_perc_multichannel,
     m_z_multichannel,
 ):
-    # mo.stop(not run_multichannel.value)
-
-    multichannel_img = []
+    multichannel_imgs_list = []
+    single_channels_imgs_list = []
 
     for i in range(len(m_z_multichannel.value)):
         _data = data_xr.sel(
-            m_z=m_z_multichannel.value[i], iteration=iteration_multichannel.value
+            m_z=m_z_multichannel.value[i],
+            iteration=iteration_multichannel.value,
         )
         _span = np.nanpercentile(
             _data.values,
@@ -531,25 +557,36 @@ def _(
             span=_span,
         )
 
-        multichannel_img.append(_ch)
+        multichannel_imgs_list.append(_ch)
+        single_channels_imgs_list.append(_ch)
 
+    multichannel_img = stack(*multichannel_imgs_list, how="add")
 
-    stack(*multichannel_img, how="add")
+    mo.output.append(mo.hstack(single_channels_imgs_list))
+    mo.output.append(multichannel_img)
     return (multichannel_img,)
 
 
 @app.cell
 def _(multichannel_img):
-    # Now standard stacking (over) will work because 
-    # the backgrounds are transparent rather than white
-    stack(multichannel_img[0], multichannel_img[1])
+    _t = multichannel_img.to_pil()
+    mo.inspect(_t)
     return
 
 
 @app.cell
-def _(multichannel_img):
-    _pil = [el.to_pil() for el in multichannel_img]
-    ImageChops.multiply(_pil[0], _pil[1]), Image.alpha_composite(_pil[0], _pil[1])
+def _():
+    # For white backgorund
+    # Now standard stacking (over) will work because
+    # the backgrounds are transparent rather than white
+    # stack(multichannel_img[0], multichannel_img[1])
+    return
+
+
+@app.cell
+def _():
+    # _pil = [el.to_pil() for el in multichannel_img]
+    # ImageChops.multiply(_pil[0], _pil[1]), Image.alpha_composite(_pil[0], _pil[1])
     return
 
 
@@ -594,29 +631,20 @@ def _(
     # Instead of cmap_obj.colors, sample it at 256 points.
     # This ensures a smooth ramp even if the ListedColormap only had 10 colors.
     x_steps = np.linspace(0, 1, 256)
-    color_floats = cmap_obj(x_steps)[:, :3]  # Returns (256, 3) in range 0.0 to 1.0
+    color_floats = cmap_obj(x_steps)[
+        :, :3
+    ]  # Returns (256, 3) in range 0.0 to 1.0
 
     # 4. Convert to TIFF's 16-bit Palette Format
     # TIFF requires a (3, 256) array of uint16 (0 to 65535)
     # We multiply by 65535 to scale 1.0 to the max 16-bit value
     palette_for_tiff = (color_floats.T * 65535).astype(np.uint16)
-
-    # 5. Save using tifffile
-    # tifffile.imwrite(
-    #     "colormapped_output.tif",
-    #     indexed_data,
-    #     imagej=True,
-    #     photometric="palette",
-    #     colormap=palette_for_tiff,
-    #     metadata={"axes": "YX"},  # Optional: clarifies orientation for ImageJ/Fiji
-    # )
     return
 
 
 @app.cell
 def _():
     swatch_button = mo.ui.run_button(label="Generate Colormap Swatches")
-    # swatch_button
     return (swatch_button,)
 
 
@@ -715,9 +743,7 @@ def export_xarray_to_tiff(data_array: xr.DataArray, output_dir: Path):
             # Select specific mz: shape becomes (y, x)
             img_slice = data_array.sel(m_z=mz).values
 
-            fname = (
-                f"{original_file_name}_mz_{mz:.4f}±{tolerance}_original.tiff"
-            )
+            fname = f"{original_file_name}_mz_{mz:.4f}±{tolerance}_original.tiff"
             save_path = output_dir / fname
 
             tifffile.imwrite(
