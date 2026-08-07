@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.5"
+__generated_with = "0.23.16"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -20,11 +20,72 @@ with app.setup:
     from bioio import BioImage, PhysicalPixelSizes
     from bioio.array_like_reader import ArrayLikeReader
     from bioio_ome_zarr.writers import OMEZarrWriter, get_default_config_for_viz
+    from bioio_ome_zarr.writers.metadata import Channel
 
 
 @app.cell
 def _():
-    filepath = r"/mnt/eternus/users/Davide/maldi-deconv-rl/data/images/SMALDI 5/Cerebellum/DHAP_Positive/282-1/original_2026-05-11_09-34-28/QEHF1_CC282-1_MouseCerebellum_DHAP_A43-5_1-3um_400x238_3-5kV.imzml_original.h5"
+    # 1. Prepare sample image data (5D array: TCZYX)
+    _data = np.random.randint(0, 65535, size=(1, 2, 5, 512, 512), dtype=np.uint16)
+
+    # 2. Define optional OMERO channel metadata
+    _channels = [
+        Channel(label="DAPI", color="#0000FF"),
+        Channel(label="GFP", color="#00FF00"),
+    ]
+
+    _zip_path = "sample_image.ome.zarr.zip"
+
+    # 3. Use ZipStore within a context manager (auto-closes and flushes zip header on exit)
+    with zarr.storage.ZipStore(_zip_path, mode="w") as store:
+        # 4. Instantiate OMEZarrWriter with required parameters
+        writer = OMEZarrWriter(
+            store=store,
+            level_shapes=_data.shape,  # Required: single tuple or list of shapes for pyramids
+            dtype=_data.dtype,          # Required: numpy data type
+            channels=_channels,
+            axes_names=["t", "c", "z", "y", "x"],
+            axes_units=[None, None, "micrometer", "micrometer", "micrometer"],
+            physical_pixel_size=[1.0, 1.0, 0.5, 0.25, 0.25],
+            zarr_format=3,             # 2 for NGFF 0.4, 3 for NGFF 0.5
+        )
+
+        # 5. Write the full array volume to the store
+        writer.write_full_volume(_data)
+
+    print(f"Successfully wrote OME-Zarr ZIP file to: {_zip_path}")
+    return
+
+
+@app.cell
+def _():
+    _level_shapes = [
+        (2, 3, 4, 256, 256),  # L0 full res
+        (2, 3, 4, 128, 128),  # L1 downsampled Y/X by 2
+    ]
+
+    _data = np.random.randint(0, 255, size=_level_shapes[0], dtype=np.uint8)
+    _channels = [Channel(label=f"c{i}", color="FF0000") for i in range(_data.shape[1])]
+
+
+    _writer = OMEZarrWriter(
+        store="test.ome.zarr.zip",
+        level_shapes=_level_shapes,
+        dtype=_data.dtype,
+        zarr_format=3,
+        channels=_channels,
+        axes_names=["t", "c", "z", "y", "x"],
+        axes_types=["time", "channel", "space", "space", "space"],
+        axes_units=[None, None, "micrometer", "micrometer", "micrometer"],
+    )
+
+    _writer.write_full_volume(_data)
+    return
+
+
+@app.cell
+def _():
+    filepath = r"/mnt/eternus/users/Davide/maldi-deconv-rl/data/images/SMALDI 1.4/U2OS-FUCCI/015-2/deconvolved_2026-05-26_13-58-19/Exploris240-2_CC015-2_U2OS-FUCCI_DHAP_900nm_277x333_2-5kV.imzml_deconvolved.h5"
     return (filepath,)
 
 
@@ -42,19 +103,36 @@ def _(data_xr):
 
 @app.cell
 def _(data_xr):
-    data_xr.to_zarr("data/test.zarr")
+    data_xr.dims
+    return
+
+
+app._unparsable_cell(
+    r"""
+    def convert_to_zarr(img: xarray.DataArray):
+    """,
+    name="_"
+)
+
+
+@app.cell
+def _(xarray):
+    def convert_to_zarr(img: xarray.DataArray):
+        if not ("iteration" in img.dims and "m_z" in img.dims):
+            raise ValueError("Improper xarray")
+
+        mz_channels = [f"m/z={mz:.6f}" for mz in img.m_z.values]
+        print(mz_channels)
+
+
+
+
     return
 
 
 @app.cell
-def _(data_xr):
-    da = data_xr
-    return (da,)
-
-
-@app.cell
 def _():
-    # mz_channels = [f"{mz:.4f} m/z" for mz in da.m_z.values]
+    # 
     # pixel_sizes = PhysicalPixelSizes(
     #     X=da.attrs.get("pixel_size_x"), 
     #     Y=da.attrs.get("pixel_size_y"), 
@@ -79,11 +157,9 @@ def _():
 
 
 @app.cell
-def _(da):
-    from bioio_ome_zarr.writers.metadata import Channel
-
+def _(da, mz_channels_raw):
     # --- [Step 1: Your working BioImage setup] ---
-    mz_channels_raw = [f"{mz:.4f} m/z" for mz in da.m_z.values]
+
     pixel_sizes = PhysicalPixelSizes(
         X=da.attrs.get("pixel_size_x"), 
         Y=da.attrs.get("pixel_size_y"), 
@@ -135,7 +211,11 @@ def _(da):
         channels=mz_channels_structured,              # Hand over the clean metadata objects
         physical_pixel_size=physical_pixel_size,
     )
+    return img_xr, zarr_output_path, zarr_writer
 
+
+@app.cell
+def _(da, img_xr, zarr_output_path, zarr_writer):
     # Safely write out the active dask array volume
     zarr_writer.write_full_volume(img_xr.data)
 
@@ -150,13 +230,12 @@ def _(da):
     }
 
     root.attrs.update(custom_metadata)
-    return (img_xr,)
+    return
 
 
 @app.cell
 def _(img_xr):
     img_xr.data
-
     return
 
 

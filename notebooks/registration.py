@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.9"
+__generated_with = "0.23.14"
 app = marimo.App(width="full")
 
 with app.setup:
@@ -30,6 +30,32 @@ with app.setup:
 
     from pyimzml.ImzMLParser import ImzMLParser
     import SimpleITK as sitk
+
+    from scipy.interpolate import splprep, splev
+
+    from skimage.filters import (
+        threshold_otsu,
+        threshold_li,
+        threshold_triangle,
+        threshold_isodata,
+    )
+
+    from sklearn.metrics import (
+        auc,
+        average_precision_score,
+        precision_recall_curve,
+        roc_auc_score,
+        roc_curve,
+    )
+    from scipy.ndimage import distance_transform_edt
+
+    from sklearn.metrics import normalized_mutual_info_score
+
+    from scipy.ndimage import find_objects, label
+
+    from skimage.filters import sobel
+
+    from scipy.ndimage import binary_erosion
 
 
 @app.cell
@@ -95,7 +121,7 @@ def _(maldi_select_widget, ref_select_widget):
         REF_channel_widget = mo.ui.dropdown(
             options={str(ch): ch for ch in _channels},
             value=str(_channels[0]),
-            label="Fluorescence Channel:"
+            label="Fluorescence Channel:",
         )
     else:
         REF_channel_widget = None
@@ -119,19 +145,17 @@ def _(maldi_select_widget, ref_select_widget):
 
     # Build UI elements conditionally
     _ref_ui_elements = [
-        mo.md(
-            f"Pixel Size Reference Image: {REF_pixel_size_text} μm / pixel"
-        ),
+        mo.md(f"Pixel Size Reference Image: {REF_pixel_size_text} μm / pixel"),
     ]
     if is_fluorescence and REF_channel_widget is not None:
         _ref_ui_elements.append(REF_channel_widget)
         _ref_ui_elements.append(
-            mo.md(f"**Detected: Fluorescence image** ({len(_channels)} channels)")
+            mo.md(
+                f"**Detected: Fluorescence image** ({len(_channels)} channels)"
+            )
         )
     elif is_rgb:
-        _ref_ui_elements.append(
-            mo.md("**Detected: RGB/H&E image**")
-        )
+        _ref_ui_elements.append(mo.md("**Detected: RGB/H&E image**"))
 
     mo.hstack(
         [
@@ -566,66 +590,118 @@ def _():
 
 
 @app.cell
+def _():
+    # # fucci fig 3
+
+    # REF_lm_stream.event(data=
+    #   {
+    #     "x": [
+    #       107.7567620025882,
+    #       100.76429197900602,
+    #       126.23682596658055,
+    #       102.26265391598334,
+    #       198.65875799146863,
+    #       147.71369001631956,
+    #       138.72344218266363,
+    #       223.13238402105827
+    #     ],
+    #     "y": [
+    #       1033.8688376856246,
+    #       996.1450969138434,
+    #       1008.8897721201462,
+    #       1068.534603166206,
+    #       985.4390719016737,
+    #       939.0485786104502,
+    #       913.6867994096265,
+    #       1002.2622920934311
+    #     ]
+    #   }
+    # )
+
+    # MALDI_lm_stream.event(data={
+    #     "x": [
+    #       64.72998639809967,
+    #       59.69391720241973,
+    #       83.95883016412911,
+    #       59.69391720241973,
+    #       154.4643577760639,
+    #       108.22367326678655,
+    #       101.81410525081137,
+    #       182.84969733960705
+    #     ],
+    #     "y": [
+    #       166.04315909067785,
+    #       126.73811618804928,
+    #       141.37419883728023,
+    #       193.78111481984453,
+    #       119.65608493804928,
+    #       82.35727175394689,
+    #       46.9471155039469,
+    #       140.42958220163976
+    #     ]
+    #   }
+    # )
+    return
+
+
+@app.cell
 def _(MALDI_lm_stream, REF_lm_stream):
-    # fucci fig 3
+    # # HOECHST DATASET
 
-    REF_lm_stream.event(data=
-      {
-        "x": [
-          107.7567620025882,
-          100.76429197900602,
-          126.23682596658055,
-          102.26265391598334,
-          198.65875799146863,
-          147.71369001631956,
-          138.72344218266363,
-          223.13238402105827
-        ],
-        "y": [
-          1033.8688376856246,
-          996.1450969138434,
-          1008.8897721201462,
-          1068.534603166206,
-          985.4390719016737,
-          939.0485786104502,
-          913.6867994096265,
-          1002.2622920934311
-        ]
-      }
+    REF_lm_stream.event(
+        data={
+            "x": [
+                407.15012687894193,
+                394.18618225235554,
+                385.2455307857443,
+                463.92326369192364,
+                458.55887281195686,
+                536.3425405714752,
+                540.8128663047809,
+                386.9294737552241,
+            ],
+            "y": [
+                526.4979367633516,
+                526.9589391045988,
+                533.4129718820589,
+                467.4896370837171,
+                505.75283140723013,
+                361.45909859687384,
+                327.8059276858323,
+                438.19590710521726,
+            ],
+        }
     )
-
-    MALDI_lm_stream.event(data={
-        "x": [
-          64.72998639809967,
-          59.69391720241973,
-          83.95883016412911,
-          59.69391720241973,
-          154.4643577760639,
-          108.22367326678655,
-          101.81410525081137,
-          182.84969733960705
-        ],
-        "y": [
-          166.04315909067785,
-          126.73811618804928,
-          141.37419883728023,
-          193.78111481984453,
-          119.65608493804928,
-          82.35727175394689,
-          46.9471155039469,
-          140.42958220163976
-        ]
-      }
+    MALDI_lm_stream.event(
+        data={
+            "x": [
+                158.1707695265411,
+                148.80166373093067,
+                143.40733009103377,
+                215.2371411907137,
+                214.10149200336696,
+                288.77042607141345,
+                291.8934613366169,
+                143.0760541616171,
+            ],
+            "y": [
+                296.7245176129544,
+                298.18844039351853,
+                304.04413151577506,
+                236.7036836098251,
+                267.153277445559,
+                126.32390595528994,
+                98.80215768068432,
+                205.52454928440082,
+            ],
+        }
     )
     return
 
 
 @app.cell
-def _():
-    # (
-    #     REF_lm_stream.data,
-    #     MALDI_lm_stream.data
-    # )
+def _(MALDI_lm_stream, REF_lm_stream):
+    (REF_lm_stream.data, MALDI_lm_stream.data)
     return
 
 
@@ -705,67 +781,70 @@ def _(
 
 
 @app.cell
-def _(MALDI_sitk, REF_sitk, is_rgb, landmark_initializer, transform):
-    # if (deconv_image_path.parent / "transorm.tfm").is_file():
-    #     REF_MALDI_transform = sitk.ReadTransform("transorm.tfm")
-    #     mo.output.append(
-    #         mo.md(f"""
-    #     **Read from file**
-    #     """).callout(kind="success")
-    #     )
-    # else:
-    _reg = sitk.ImageRegistrationMethod()
+def _(
+    MALDI_sitk,
+    REF_sitk,
+    deconv_image_path,
+    is_rgb,
+    landmark_initializer,
+    transform,
+):
+    _trasform_file = deconv_image_path.parent / "transorm.tfm"
 
-    # Mattes Mutual Information: standard for multi-modal registration
-    if is_rgb:
-        _reg.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
+    if _trasform_file.is_file():
+        REF_MALDI_transform = sitk.ReadTransform(_trasform_file)
+        mo.output.append(
+            mo.md("""**Read from file**""").callout(kind="success")
+        )
     else:
-        _reg.SetMetricAsCorrelation()
-    _reg.SetInterpolator(sitk.sitkLinear)
+        _reg = sitk.ImageRegistrationMethod()
 
-    # Gradient descent with line search
-    _reg.SetOptimizerAsGradientDescentLineSearch(
-        learningRate=1.0,
-        numberOfIterations=200,
-        convergenceMinimumValue=1e-7,
-        convergenceWindowSize=10,
-    )
-    _reg.SetOptimizerScalesFromPhysicalShift()
+        # Mattes Mutual Information: standard for multi-modal registration
+        if is_rgb:
+            _reg.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
+        else:
+            _reg.SetMetricAsCorrelation()
+        _reg.SetInterpolator(sitk.sitkNearestNeighbor)
 
-    # Multi-resolution pyramid (coarse → fine)
-    _reg.SetShrinkFactorsPerLevel(shrinkFactors=[4, 2, 1])
-    _reg.SetSmoothingSigmasPerLevel(smoothingSigmas=[2.0, 1.0, 0.0])
-    _reg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
+        # Gradient descent with line search
+        _reg.SetOptimizerAsGradientDescentLineSearch(
+            learningRate=1.0,
+            numberOfIterations=200,
+            convergenceMinimumValue=1e-7,
+            convergenceWindowSize=10,
+        )
+        _reg.SetOptimizerScalesFromPhysicalShift()
 
-    _output_landmark = landmark_initializer.Execute(transform)
+        # Multi-resolution pyramid (coarse → fine)
+        _reg.SetShrinkFactorsPerLevel(shrinkFactors=[4, 2, 1])
+        _reg.SetSmoothingSigmasPerLevel(smoothingSigmas=[2.0, 1.0, 0.0])
+        _reg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
 
-    # Start from the landmark-based affine transform
-    _reg.SetInitialTransform(_output_landmark, inPlace=False)
+        _output_landmark = landmark_initializer.Execute(transform)
 
-    _REF_norm = sitk.RescaleIntensity(sitk.Cast(REF_sitk, sitk.sitkFloat32))
-    _MALDI_norm = sitk.RescaleIntensity(
-        sitk.Cast(MALDI_sitk, sitk.sitkFloat32)
-    )
+        # Start from the landmark-based affine transform
+        _reg.SetInitialTransform(_output_landmark, inPlace=False)
 
-    REF_MALDI_transform = _reg.Execute(_REF_norm, _MALDI_norm)
+        _REF_norm = sitk.RescaleIntensity(
+            sitk.Cast(REF_sitk, sitk.sitkFloat32)
+        )
+        _MALDI_norm = sitk.RescaleIntensity(
+            sitk.Cast(MALDI_sitk, sitk.sitkFloat32)
+        )
 
-    mo.output.append(
-        mo.md(f"""
-    **Intensity-based registration complete**  
-    Final metric value: `{_reg.GetMetricValue():.5f}`  
-    Stopping condition: `{_reg.GetOptimizerStopConditionDescription()}`
-    """).callout(kind="success")
-    )
+        REF_MALDI_transform = _reg.Execute(_REF_norm, _MALDI_norm)
+
+        mo.output.append(
+            mo.md(f"""
+        **Intensity-based registration complete**  
+        Final metric value: `{_reg.GetMetricValue():.5f}`  
+        Stopping condition: `{_reg.GetOptimizerStopConditionDescription()}`
+        """).callout(kind="success")
+        )
+
+        # Save the transform to file
+        sitk.WriteTransform(REF_MALDI_transform, _trasform_file)
     return (REF_MALDI_transform,)
-
-
-@app.cell
-def _(REF_MALDI_transform, deconv_image_path):
-    # Save the transform to file
-    sitk.WriteTransform(
-        REF_MALDI_transform, deconv_image_path.parent / "transorm.tfm"
-    )
-    return
 
 
 @app.cell
@@ -794,7 +873,7 @@ def _(
 
         resampler = sitk.ResampleImageFilter()
         resampler.SetReferenceImage(REF_sitk)
-        resampler.SetInterpolator(sitk.sitkLinear)
+        resampler.SetInterpolator(sitk.sitkNearestNeighbor)
         resampler.SetDefaultPixelValue(0.0)
         resampler.SetTransform(REF_MALDI_transform)
         MALDI_reg_sitk = resampler.Execute(MALDI_sitk)
@@ -850,7 +929,6 @@ def _(
     else:
         MALDI_image_transformed_xr = None
 
-
     # --- Crop both REF and MALDI images to the transformed MALDI bounding box ---
 
     if MALDI_image_transformed_xr is not None:
@@ -864,16 +942,20 @@ def _(
             (0.0, 0.0),
             (_size_x * _spacing_x, 0.0),
             (0.0, _size_y * _spacing_y),
-            (_size_x * _spacing_x, _size_y * _spacing_y)
+            (_size_x * _spacing_x, _size_y * _spacing_y),
         ]
 
         # 2. Map the local corners to the reference frame using the inverse transform
         try:
             inverse_transform = REF_MALDI_transform.GetInverse()
         except Exception as e:
-            raise RuntimeError("Could not invert the transform to map MALDI coordinates to REF space.") from e
+            raise RuntimeError(
+                "Could not invert the transform to map MALDI coordinates to REF space."
+            ) from e
 
-        ref_corners_physical = [inverse_transform.TransformPoint(pt) for pt in maldi_corners_local]
+        ref_corners_physical = [
+            inverse_transform.TransformPoint(pt) for pt in maldi_corners_local
+        ]
 
         # Extract mapped X and Y coordinates
         ref_xs = [pt[0] for pt in ref_corners_physical]
@@ -892,30 +974,73 @@ def _(
         ref_x_coords = REF_image_xr.coords["X"].values
         ref_y_coords = REF_image_xr.coords["Y"].values
 
-        x_slice = get_slice_bounds(ref_x_coords, min_physical_x, max_physical_x)
-        y_slice = get_slice_bounds(ref_y_coords, min_physical_y, max_physical_y)
+        x_slice = get_slice_bounds(
+            ref_x_coords, min_physical_x, max_physical_x
+        )
+        y_slice = get_slice_bounds(
+            ref_y_coords, min_physical_y, max_physical_y
+        )
 
         # 4. Crop using standard xarray slicing (WITHOUT method="nearest")
-        REF_image_transformed_xr = REF_image_xr.sel(
-            Y=y_slice, 
-            X=x_slice
-        )
+        REF_image_transformed_xr = REF_image_xr.sel(Y=y_slice, X=x_slice)
 
         MALDI_image_transformed_xr = MALDI_image_transformed_xr.sel(
-            Y=y_slice, 
-            X=x_slice
+            Y=y_slice, X=x_slice
         )
-
-
-    return MALDI_image_transformed_xr, REF_image_transformed_xr
+    return (
+        MALDI_image_transformed_xr,
+        REF_image_transformed_xr,
+        x_slice,
+        y_slice,
+    )
 
 
 @app.cell
-def _(MALDI_image_transformed_xr, MALDI_m_z_registration, deconv_image_path):
+def _(
+    MALDI_image_transformed_xr,
+    MALDI_m_z_registration,
+    REF_image_raw,
+    REF_image_xr,
+    REF_pixel_um,
+    deconv_image_path,
+    is_fluorescence,
+    is_rgb,
+    x_slice,
+    y_slice,
+):
     if MALDI_image_transformed_xr is not None:
         MALDI_image_transformed_xr.to_netcdf(
             deconv_image_path.parent
             / f"{deconv_image_path.name}_deconvolved_registered_m_z-{MALDI_m_z_registration}.h5"
+        )
+
+        _output = REF_image_raw.copy()
+
+        _output.attrs.clear()
+
+        _output = _output.assign_coords(
+            X=REF_image_xr.X.values, Y=REF_image_xr.Y.values
+        )
+
+        if is_fluorescence:
+            _output = _output.rename({"C": "m_z"})
+        if is_rgb:
+            _output = _output.rename({"S": "m_z"})
+
+        _output = _output.assign_coords(m_z=np.arange(len(_output.m_z)))
+
+        _output = _output.assign_attrs(
+            {
+                "pixel_size_x": REF_pixel_um,
+                "pixel_size_y": REF_pixel_um,
+            }
+        )
+
+        _output = _output.sel(X=x_slice, Y=y_slice)
+
+        _output.to_netcdf(
+            deconv_image_path.parent
+            / f"{deconv_image_path.name}_REFERENCE_registered.h5"
         )
     return
 
@@ -950,9 +1075,10 @@ def _(
             name, linear_configs[name]
         )
 
-
     if MALDI_m_z_registration in MALDI_image_transformed_xr.m_z.values:
-        _MALDI_for_overlay = MALDI_image_transformed_xr.sel(m_z=MALDI_m_z_registration)
+        _MALDI_for_overlay = MALDI_image_transformed_xr.sel(
+            m_z=MALDI_m_z_registration
+        )
     else:
         # Fallback to first m/z if registration m/z not in transform selection
         _MALDI_for_overlay = MALDI_image_transformed_xr.isel(m_z=0)
@@ -1047,18 +1173,20 @@ def _(
     )
 
     (_REF_rgb * _MALDI_hot).opts(
-        hv.opts.Overlay(title="Registration result: Cropped Reference + MALDI overlay (final iteration)")
-    ) + (_REF_gray * _MALDI_gray).opts(
-        hv.opts.Overlay(title="Registration result: Cropped Reference + MALDI overlay (final iteration)")
+        hv.opts.Overlay(
+            title="Registration result: Cropped Reference + MALDI overlay (final iteration)"
         )
+    ) + (_REF_gray * _MALDI_gray).opts(
+        hv.opts.Overlay(
+            title="Registration result: Cropped Reference + MALDI overlay (final iteration)"
+        )
+    )
     return
 
 
 @app.cell
 def _(REF_image_transformed_xr, REF_image_xr, is_rgb):
     hvplot.extension("bokeh")
-
-    from scipy.interpolate import splprep, splev
 
     # 1. Keep your Polygons element as the source of the drawing stream
     _he_polys = hv.Polygons([]).opts(
@@ -1126,7 +1254,11 @@ def _(REF_image_transformed_xr, REF_image_xr, is_rgb):
     )
 
     # 4. Overlay everything together (use cropped reference image if available)
-    _ref_for_drawing = REF_image_transformed_xr if REF_image_transformed_xr is not None else REF_image_xr
+    _ref_for_drawing = (
+        REF_image_transformed_xr
+        if REF_image_transformed_xr is not None
+        else REF_image_xr
+    )
 
     _plot = (
         _ref_for_drawing.hvplot.rgb(
@@ -1154,7 +1286,7 @@ def _(REF_image_transformed_xr, REF_image_xr, is_rgb):
             robust=True,
             colorbar=False,
             hover=False,
-        ) 
+        )
     )
 
     _he_combined = (_plot * _he_polys).opts(active_tools=["pan", "wheel_zoom"])
@@ -1170,19 +1302,19 @@ def _():
 
 @app.cell
 def _(REF_image_transformed_xr, REF_pixel_um, REF_poly_stream, is_rgb):
-    from skimage.filters import threshold_otsu, threshold_li, threshold_triangle, threshold_isodata
-
     # Check if manual ROI annotations exist
     _xs_list = REF_poly_stream.data.get("xs", [])
     _ys_list = REF_poly_stream.data.get("ys", [])
 
     # Filter out invalid polygons (< 3 points)
-    _valid_polygons = [(xs, ys) for xs, ys in zip(_xs_list, _ys_list) if len(xs) >= 3]
+    _valid_polygons = [
+        (xs, ys) for xs, ys in zip(_xs_list, _ys_list) if len(xs) >= 3
+    ]
 
     if len(_valid_polygons) == 0:
         # No manual annotations - use Otsu thresholding
         _ref_for_mask = REF_image_transformed_xr
-    
+
         # Convert to grayscale if RGB
         if is_rgb and "S" in _ref_for_mask.dims:
             _gray = (
@@ -1192,16 +1324,18 @@ def _(REF_image_transformed_xr, REF_pixel_um, REF_poly_stream, is_rgb):
             )
         else:
             _gray = _ref_for_mask.values
-    
+
         # Apply Otsu thresholding
-        _otsu_thresh = threshold_triangle(_gray)
+        _otsu_thresh = threshold_otsu(_gray)
         roi_mask = (_gray > _otsu_thresh).astype(np.uint8)
-    
+
         # No individual ROI centers in automatic mode
         roi_centers = []
-    
+
         mo.output.append(
-            mo.md("**Automatic ROI detection** using Otsu thresholding (no manual annotations provided)").callout(kind="info")
+            mo.md(
+                "**Automatic ROI detection** using Otsu thresholding (no manual annotations provided)"
+            ).callout(kind="info")
         )
     else:
         # Manual annotations exist - use polygon drawing
@@ -1220,7 +1354,9 @@ def _(REF_image_transformed_xr, REF_pixel_um, REF_poly_stream, is_rgb):
             # Convert physical coordinates (μm) to pixel indices
             # Account for coordinate offset from cropping
             _pts_physical = np.column_stack((_xs, _ys))
-            _pts_px = (_pts_physical - np.array([_x_min, _y_min])) / REF_pixel_um
+            _pts_px = (
+                _pts_physical - np.array([_x_min, _y_min])
+            ) / REF_pixel_um
             _px_x = _pts_px[:, 0]
             _px_y = _pts_px[:, 1]
 
@@ -1239,7 +1375,10 @@ def _(REF_image_transformed_xr, REF_pixel_um, REF_poly_stream, is_rgb):
     mask_xr = xr.DataArray(
         roi_mask,
         dims=["Y", "X"],
-        coords={"X": _ref_for_mask.coords["X"], "Y": _ref_for_mask.coords["Y"]},
+        coords={
+            "X": _ref_for_mask.coords["X"],
+            "Y": _ref_for_mask.coords["Y"],
+        },
     )
 
     # Visualization
@@ -1257,7 +1396,7 @@ def _(REF_image_transformed_xr, REF_pixel_um, REF_poly_stream, is_rgb):
         _x_min = float(REF_image_transformed_xr.coords["X"].min())
         _y_min = float(REF_image_transformed_xr.coords["Y"].min())
         _phys_centers = [
-            (c[0] * REF_pixel_um + _x_min, c[1] * REF_pixel_um + _y_min) 
+            (c[0] * REF_pixel_um + _x_min, c[1] * REF_pixel_um + _y_min)
             for c in roi_centers
         ]
         _centers_plot = hv.Points(_phys_centers).opts(color="red", size=5)
@@ -1271,9 +1410,6 @@ def _(REF_image_transformed_xr, REF_pixel_um, REF_poly_stream, is_rgb):
 
 @app.cell
 def _(MALDI_image_transformed_xr, mask_xr):
-    from sklearn.metrics import roc_auc_score, roc_curve
-    from scipy.ndimage import distance_transform_edt
-
     # Get the first m/z and first two iterations for comparison
     if MALDI_image_transformed_xr is not None:
         _first_mz = MALDI_image_transformed_xr.m_z.values[0]
@@ -1301,16 +1437,16 @@ def _(MALDI_image_transformed_xr, mask_xr):
         MALDI_transform_1 = None
 
     # Flatten arrays
-    _y_true = mask_xr.values.flatten()
+    _y_true = mask_xr.values.flatten().astype(np.uint8)
     _y_scores_0 = (
         MALDI_transform_0.values.flatten()
         if MALDI_transform_0 is not None
-        else np.zeros_like(_y_true)
+        else np.zeros_like(_y_true, dtype=np.float64)
     )
     _y_scores_6 = (
         MALDI_transform_1.values.flatten()
         if MALDI_transform_1 is not None
-        else np.zeros_like(_y_true)
+        else np.zeros_like(_y_true, dtype=np.float64)
     )
 
     # ROC AUC
@@ -1337,13 +1473,70 @@ def _(MALDI_image_transformed_xr, mask_xr):
         height=400,
     ) * hv.Curve([[0, 0], [1, 1]]).opts(color="black", line_dash="dashed")
 
+    # Precision-recall metrics
+    _precision_0, _recall_0, _thresholds_0 = precision_recall_curve(
+        _y_true, _y_scores_0
+    )
+    _precision_6, _recall_6, _thresholds_6 = precision_recall_curve(
+        _y_true, _y_scores_6
+    )
+
+    pr_auc_0 = auc(_recall_0[::-1], _precision_0[::-1])
+    pr_auc_6 = auc(_recall_6[::-1], _precision_6[::-1])
+    average_precision_0 = average_precision_score(_y_true, _y_scores_0)
+    average_precision_6 = average_precision_score(_y_true, _y_scores_6)
+
+    def _best_threshold_from_pr(_precision, _recall, _thresholds):
+        if len(_thresholds) == 0:
+            return 0.0, 0.0
+
+        _precision_aligned = _precision[:-1]
+        _recall_aligned = _recall[:-1]
+        _f1_scores = np.divide(
+            2 * _precision_aligned * _recall_aligned,
+            _precision_aligned + _recall_aligned,
+            out=np.zeros_like(_precision_aligned),
+            where=(_precision_aligned + _recall_aligned) > 0,
+        )
+        _best_idx = int(np.argmax(_f1_scores))
+        return float(_thresholds[_best_idx]), float(_f1_scores[_best_idx])
+
+    best_threshold_0, best_pixel_f1_0 = _best_threshold_from_pr(
+        _precision_0, _recall_0, _thresholds_0
+    )
+    best_threshold_6, best_pixel_f1_6 = _best_threshold_from_pr(
+        _precision_6, _recall_6, _thresholds_6
+    )
+
+    _pr_df_0 = pl.DataFrame(
+        {
+            "Recall": _recall_0[:-1],
+            "Precision": _precision_0[:-1],
+            "Iteration": f"0 (PR-AUC={pr_auc_0:.3f})",
+        }
+    )
+    _pr_df_6 = pl.DataFrame(
+        {
+            "Recall": _recall_6[:-1],
+            "Precision": _precision_6[:-1],
+            "Iteration": f"6 (PR-AUC={pr_auc_6:.3f})",
+        }
+    )
+    _pr_df = pl.concat([_pr_df_0, _pr_df_6])
+
+    pr_plot = _pr_df.hvplot.line(
+        x="Recall",
+        y="Precision",
+        by="Iteration",
+        title="Precision-Recall Curve",
+        width=500,
+        height=400,
+    )
+
     # Euclidean Distance Transform (EDT)
-    # Computed on the ground truth mask (distance to nearest ROI boundary/center)
-    # EDT is 0 inside ROIs, >0 outside.
     edt_map = distance_transform_edt(mask_xr.values == 0)
 
     # Use EDT as an intensity-weighted metric: average distance to nearest ROI
-    # Lower is better (signal is concentrated in or near ROIs)
     _sum_0 = np.sum(_y_scores_0)
     _sum_6 = np.sum(_y_scores_6)
 
@@ -1358,15 +1551,23 @@ def _(MALDI_image_transformed_xr, mask_xr):
         MALDI_transform_1,
         auc_0,
         auc_6,
-        distance_transform_edt,
+        average_precision_0,
+        average_precision_6,
+        best_pixel_f1_0,
+        best_pixel_f1_6,
+        best_threshold_0,
+        best_threshold_6,
+        pr_auc_0,
+        pr_auc_6,
+        pr_plot,
         roc_plot,
     )
 
 
 @app.cell
-def _(roc_plot):
+def _(pr_plot, roc_plot):
     hv.extension("matplotlib")
-    roc_plot
+    (roc_plot + pr_plot).cols(2)
     return
 
 
@@ -1380,7 +1581,11 @@ def _(
     mask_xr,
 ):
     # Compute correlations and other metrics (use cropped reference)
-    _ref_for_analysis = REF_image_transformed_xr if REF_image_transformed_xr is not None else REF_image_xr
+    _ref_for_analysis = (
+        REF_image_transformed_xr
+        if REF_image_transformed_xr is not None
+        else REF_image_xr
+    )
     _mask_flat = mask_xr.values.flatten()
     _ref_flat = (
         _ref_for_analysis.mean(dim="S").values.flatten()
@@ -1399,62 +1604,112 @@ def _(
         else np.zeros_like(_mask_flat)
     )
 
+    def _cohens_d(_inside_values, _outside_values):
+        if len(_inside_values) < 2 or len(_outside_values) < 2:
+            return 0.0
+
+        _var_in = np.var(_inside_values, ddof=1)
+        _var_out = np.var(_outside_values, ddof=1)
+        _pooled_denom = len(_inside_values) + len(_outside_values) - 2
+        if _pooled_denom <= 0:
+            return 0.0
+
+        _pooled_std = np.sqrt(
+            (
+                (len(_inside_values) - 1) * _var_in
+                + (len(_outside_values) - 1) * _var_out
+            )
+            / _pooled_denom
+        )
+        if _pooled_std <= 0:
+            return 0.0
+
+        return float(
+            (np.mean(_inside_values) - np.mean(_outside_values)) / _pooled_std
+        )
+
+    def _inside_outside_ratio(_inside_values, _outside_values):
+        _eps = np.finfo(np.float64).eps
+        return float(
+            (np.mean(_inside_values) + _eps)
+            / (np.mean(_outside_values) + _eps)
+        )
+
+    def _digitize_for_nmi(_values, _n_bins=64):
+        _values = np.asarray(_values, dtype=np.float64)
+        if len(_values) == 0 or np.allclose(_values, _values[0]):
+            return np.zeros(len(_values), dtype=np.int32)
+
+        _edges = np.quantile(_values, np.linspace(0.0, 1.0, _n_bins + 1))
+        _edges = np.unique(_edges)
+        if len(_edges) <= 2:
+            return np.zeros(len(_values), dtype=np.int32)
+
+        return np.digitize(_values, _edges[1:-1], right=False)
+
     # Correlation with mask
     corr_mask_0 = np.corrcoef(_mask_flat, _maldi_0_flat)[0, 1]
     corr_mask_6 = np.corrcoef(_mask_flat, _maldi_6_flat)[0, 1]
 
     # Inside/outside ROIs
     _in_mask = _mask_flat > 0
+    _out_mask = _mask_flat == 0
+
+    _inside_0 = _maldi_0_flat[_in_mask]
+    _inside_6 = _maldi_6_flat[_in_mask]
+    _outside_0 = _maldi_0_flat[_out_mask]
+    _outside_6 = _maldi_6_flat[_out_mask]
 
     if np.sum(_in_mask) > 1:
-        corr_he_in_0 = np.corrcoef(
-            _ref_flat[_in_mask], _maldi_0_flat[_in_mask]
-        )[0, 1]
-        corr_he_in_6 = np.corrcoef(
-            _ref_flat[_in_mask], _maldi_6_flat[_in_mask]
-        )[0, 1]
+        corr_he_in_0 = np.corrcoef(_ref_flat[_in_mask], _inside_0)[0, 1]
+        corr_he_in_6 = np.corrcoef(_ref_flat[_in_mask], _inside_6)[0, 1]
 
-        # CV inside ROIs
         cv_in_0 = (
-            np.std(_maldi_0_flat[_in_mask]) / np.mean(_maldi_0_flat[_in_mask])
-            if np.mean(_maldi_0_flat[_in_mask]) > 0
+            np.std(_inside_0) / np.mean(_inside_0)
+            if np.mean(_inside_0) > 0
             else 0.0
         )
         cv_in_6 = (
-            np.std(_maldi_6_flat[_in_mask]) / np.mean(_maldi_6_flat[_in_mask])
-            if np.mean(_maldi_6_flat[_in_mask]) > 0
+            np.std(_inside_6) / np.mean(_inside_6)
+            if np.mean(_inside_6) > 0
             else 0.0
         )
     else:
         corr_he_in_0, corr_he_in_6 = 0.0, 0.0
         cv_in_0, cv_in_6 = 0.0, 0.0
 
-    _out_mask = _mask_flat == 0
     if np.sum(_out_mask) > 1:
-        corr_he_out_0 = np.corrcoef(
-            _ref_flat[_out_mask], _maldi_0_flat[_out_mask]
-        )[0, 1]
-        corr_he_out_6 = np.corrcoef(
-            _ref_flat[_out_mask], _maldi_6_flat[_out_mask]
-        )[0, 1]
+        corr_he_out_0 = np.corrcoef(_ref_flat[_out_mask], _outside_0)[0, 1]
+        corr_he_out_6 = np.corrcoef(_ref_flat[_out_mask], _outside_6)[0, 1]
     else:
         corr_he_out_0, corr_he_out_6 = 0.0, 0.0
 
     # Correlation between iterations
     if np.sum(_in_mask) > 1:
-        corr_0_vs_6_in = np.corrcoef(
-            _maldi_0_flat[_in_mask], _maldi_6_flat[_in_mask]
-        )[0, 1]
+        corr_0_vs_6_in = np.corrcoef(_inside_0, _inside_6)[0, 1]
     else:
         corr_0_vs_6_in = 0.0
 
     if np.sum(_out_mask) > 1:
-        corr_0_vs_6_out = np.corrcoef(
-            _maldi_0_flat[_out_mask], _maldi_6_flat[_out_mask]
-        )[0, 1]
+        corr_0_vs_6_out = np.corrcoef(_outside_0, _outside_6)[0, 1]
     else:
         corr_0_vs_6_out = 0.0
+
+    enrichment_ratio_0 = _inside_outside_ratio(_inside_0, _outside_0)
+    enrichment_ratio_6 = _inside_outside_ratio(_inside_6, _outside_6)
+    cohens_d_0 = _cohens_d(_inside_0, _outside_0)
+    cohens_d_6 = _cohens_d(_inside_6, _outside_6)
+
+    _ref_binned = _digitize_for_nmi(_ref_flat)
+    nmi_ref_0 = normalized_mutual_info_score(
+        _ref_binned, _digitize_for_nmi(_maldi_0_flat)
+    )
+    nmi_ref_6 = normalized_mutual_info_score(
+        _ref_binned, _digitize_for_nmi(_maldi_6_flat)
+    )
     return (
+        cohens_d_0,
+        cohens_d_6,
         corr_0_vs_6_in,
         corr_0_vs_6_out,
         corr_he_in_0,
@@ -1465,11 +1720,104 @@ def _(
         corr_mask_6,
         cv_in_0,
         cv_in_6,
+        enrichment_ratio_0,
+        enrichment_ratio_6,
+        nmi_ref_0,
+        nmi_ref_6,
     )
 
 
 @app.cell
-def _(distance_transform_edt, mask_xr):
+def _(
+    MALDI_transform_0,
+    MALDI_transform_1,
+    REF_pixel_um,
+    best_threshold_0,
+    best_threshold_6,
+    mask_xr,
+):
+    _boundary_tolerance_px = 2
+    _gt_mask = mask_xr.values.astype(bool)
+
+    def _extract_boundary(_mask):
+        if not np.any(_mask):
+            return np.zeros_like(_mask, dtype=bool)
+        return np.logical_xor(_mask, binary_erosion(_mask, border_value=0))
+
+    _gt_boundary = _extract_boundary(_gt_mask)
+
+    def _compute_boundary_metrics(_maldi_image, _threshold):
+        if _maldi_image is None or not np.any(_gt_boundary):
+            return (np.nan, np.nan, np.nan, np.nan, np.nan)
+
+        _pred_mask = np.asarray(_maldi_image.values >= _threshold, dtype=bool)
+        _pred_boundary = _extract_boundary(_pred_mask)
+        if not np.any(_pred_boundary):
+            return (0.0, 0.0, 0.0, np.nan, np.nan)
+
+        _dist_to_gt = distance_transform_edt(~_gt_boundary)
+        _dist_to_pred = distance_transform_edt(~_pred_boundary)
+
+        _boundary_precision = np.mean(
+            _dist_to_gt[_pred_boundary] <= _boundary_tolerance_px
+        )
+        _boundary_recall = np.mean(
+            _dist_to_pred[_gt_boundary] <= _boundary_tolerance_px
+        )
+        _boundary_f1 = (
+            2
+            * _boundary_precision
+            * _boundary_recall
+            / (_boundary_precision + _boundary_recall)
+            if (_boundary_precision + _boundary_recall) > 0
+            else 0.0
+        )
+
+        _pred_to_gt = _dist_to_gt[_pred_boundary]
+        _gt_to_pred = _dist_to_pred[_gt_boundary]
+        _all_surface_distances = np.concatenate([_pred_to_gt, _gt_to_pred])
+
+        _mean_surface_distance_um = float(
+            0.5 * (_pred_to_gt.mean() + _gt_to_pred.mean()) * REF_pixel_um
+        )
+        _hausdorff95_um = float(
+            np.percentile(_all_surface_distances, 95) * REF_pixel_um
+        )
+
+        return (
+            float(_boundary_precision),
+            float(_boundary_recall),
+            float(_boundary_f1),
+            _mean_surface_distance_um,
+            _hausdorff95_um,
+        )
+
+    (
+        boundary_precision_0,
+        boundary_recall_0,
+        boundary_f1_0,
+        mean_surface_distance_um_0,
+        hausdorff95_um_0,
+    ) = _compute_boundary_metrics(MALDI_transform_0, best_threshold_0)
+    (
+        boundary_precision_6,
+        boundary_recall_6,
+        boundary_f1_6,
+        mean_surface_distance_um_6,
+        hausdorff95_um_6,
+    ) = _compute_boundary_metrics(MALDI_transform_1, best_threshold_6)
+    return (
+        boundary_f1_0,
+        boundary_f1_6,
+        hausdorff95_um_0,
+        hausdorff95_um_6,
+        mean_surface_distance_um_0,
+        mean_surface_distance_um_6,
+    )
+
+
+@app.cell
+def _(mask_xr):
     _dist_out = distance_transform_edt(mask_xr.values == 0)
     _dist_in = distance_transform_edt(mask_xr.values == 1)
     dist_to_border = _dist_out - _dist_in
@@ -1504,26 +1852,41 @@ def _(MALDI_transform_0, MALDI_transform_1, REF_pixel_um, dist_to_border):
             _std_0.append(np.std(_val_0_flat[_in_bin]))
             _std_6.append(np.std(_val_6_flat[_in_bin]))
         else:
-            _profile_0.append(0.0)
-            _profile_6.append(0.0)
-            _std_0.append(0.0)
-            _std_6.append(0.0)
+            _profile_0.append(np.nan)
+            _profile_6.append(np.nan)
+            _std_0.append(np.nan)
+            _std_6.append(np.nan)
         _dist_centers_um.append((_bins[_i] + 0.5) * REF_pixel_um)
 
-    _max_0 = np.max(_profile_0) if np.max(_profile_0) > 0 else 1.0
-    _max_6 = np.max(_profile_6) if np.max(_profile_6) > 0 else 1.0
+    _profile_0_arr = np.asarray(_profile_0, dtype=np.float64)
+    _profile_6_arr = np.asarray(_profile_6, dtype=np.float64)
+    _std_0_arr = np.asarray(_std_0, dtype=np.float64)
+    _std_6_arr = np.asarray(_std_6, dtype=np.float64)
+
+    _max_0 = (
+        np.nanmax(_profile_0_arr)
+        if np.any(np.isfinite(_profile_0_arr))
+        else 1.0
+    )
+    _max_6 = (
+        np.nanmax(_profile_6_arr)
+        if np.any(np.isfinite(_profile_6_arr))
+        else 1.0
+    )
+    _max_0 = _max_0 if _max_0 > 0 else 1.0
+    _max_6 = _max_6 if _max_6 > 0 else 1.0
 
     radial_profile_df = pl.DataFrame(
         {
             "Distance_um": _dist_centers_um,
-            "Iteration_0": _profile_0,
-            "Iteration_6": _profile_6,
-            "Iteration_0_std": _std_0,
-            "Iteration_6_std": _std_6,
-            "Iteration_0_norm": np.array(_profile_0) / _max_0,
-            "Iteration_6_norm": np.array(_profile_6) / _max_6,
-            "Iteration_0_norm_std": np.array(_std_0) / _max_0,
-            "Iteration_6_norm_std": np.array(_std_6) / _max_6,
+            "Iteration_0": _profile_0_arr,
+            "Iteration_6": _profile_6_arr,
+            "Iteration_0_std": _std_0_arr,
+            "Iteration_6_std": _std_6_arr,
+            "Iteration_0_norm": _profile_0_arr / _max_0,
+            "Iteration_6_norm": _profile_6_arr / _max_6,
+            "Iteration_0_norm_std": _std_0_arr / _max_0,
+            "Iteration_6_norm_std": _std_6_arr / _max_6,
         }
     )
     return (radial_profile_df,)
@@ -1531,6 +1894,8 @@ def _(MALDI_transform_0, MALDI_transform_1, REF_pixel_um, dist_to_border):
 
 @app.cell
 def _(radial_profile_df):
+    hvplot.extension("bokeh")
+
     _dist = radial_profile_df["Distance_um"].to_numpy()
 
     # Iteration 0 (Raw)
@@ -1564,8 +1929,6 @@ def _(radial_profile_df):
 
 @app.cell
 def _(MALDI_transform_0, MALDI_transform_1):
-    from skimage.filters import sobel
-
     _edges_0 = sobel(MALDI_transform_0.values)
     _edges_6 = sobel(MALDI_transform_1.values)
 
@@ -1593,7 +1956,7 @@ def _(MALDI_transform_0, MALDI_transform_1):
         height=350,
     )
     sobel_edges_plot = _plot_edges_0 + _plot_edges_6
-    return (sobel_edges_plot,)
+    return
 
 
 @app.cell
@@ -1603,14 +1966,13 @@ def _(
     REF_image_transformed_xr,
     REF_pixel_um,
     REF_poly_stream,
-    distance_transform_edt,
     mask_xr,
 ):
-    from scipy.ndimage import find_objects, label
-
     _xs_list = REF_poly_stream.data.get("xs", [])
     _ys_list = REF_poly_stream.data.get("ys", [])
-    _valid_polygons = [(xs, ys) for xs, ys in zip(_xs_list, _ys_list) if len(xs) >= 3]
+    _valid_polygons = [
+        (xs, ys) for xs, ys in zip(_xs_list, _ys_list) if len(xs) >= 3
+    ]
     _y_len, _x_len = mask_xr.shape
 
     # Get coordinate offsets for proper physical to pixel conversion
@@ -1638,6 +2000,7 @@ def _(
         _min_dist = -15
         _max_dist = 40
         _bins = np.arange(_min_dist, _max_dist + 1)
+        _dist_centers_px = _bins[:-1] + 0.5
 
         _bin_idx = np.digitize(_crop_sdt.flatten(), _bins) - 1
         _flat_0 = _patch_0.flatten()
@@ -1647,26 +2010,77 @@ def _(
         _p_6 = []
         for _i in range(len(_bins) - 1):
             _in_b = _bin_idx == _i
-            _p_0.append(np.mean(_flat_0[_in_b]) if np.any(_in_b) else 0.0)
-            _p_6.append(np.mean(_flat_6[_in_b]) if np.any(_in_b) else 0.0)
+            _p_0.append(np.mean(_flat_0[_in_b]) if np.any(_in_b) else np.nan)
+            _p_6.append(np.mean(_flat_6[_in_b]) if np.any(_in_b) else np.nan)
 
-        def _get_width(_p):
-            _p = np.array(_p)
-            _mx = np.max(_p)
-            if _mx <= 0:
+        def _interpolate_crossing(
+            _distances, _values, _threshold, _start_idx=0
+        ):
+            _crossings = np.where(_values[_start_idx:] <= _threshold)[0]
+            if len(_crossings) == 0:
+                return None, None
+
+            _idx = _start_idx + _crossings[0]
+            if _idx == 0:
+                return _distances[0], _idx
+
+            _x0 = _distances[_idx - 1]
+            _x1 = _distances[_idx]
+            _y0 = _values[_idx - 1]
+            _y1 = _values[_idx]
+            if np.isclose(_y0, _y1):
+                return _x1, _idx
+
+            _fraction = (_threshold - _y0) / (_y1 - _y0)
+            return _x0 + _fraction * (_x1 - _x0), _idx
+
+        def _get_width(_distances_px, _profile):
+            _profile = np.asarray(_profile, dtype=np.float64)
+            _distances_px = np.asarray(_distances_px, dtype=np.float64)
+            _valid = np.isfinite(_profile)
+            if np.count_nonzero(_valid) < 2:
                 return None
-            _p_norm = _p / _mx
-            _ind_90 = np.where(_p_norm <= 0.90)[0]
-            _ind_10 = np.where(_p_norm <= 0.10)[0]
-            if len(_ind_90) > 0 and len(_ind_10) > 0:
-                return _ind_10[0] - _ind_90[0]
-            return None
 
-        _w0 = _get_width(_p_0)
-        _w6 = _get_width(_p_6)
-        if _w0 is not None:
+            _profile = _profile[_valid]
+            _distances_px = _distances_px[_valid]
+
+            _outside = _distances_px >= 0
+            if np.any(_outside):
+                _peak_idx = np.where(_outside)[0][
+                    np.argmax(_profile[_outside])
+                ]
+            else:
+                _peak_idx = int(np.argmax(_profile))
+
+            _tail_profile = _profile[_peak_idx:]
+            _tail_distances_px = _distances_px[_peak_idx:]
+            if len(_tail_profile) < 2:
+                return None
+
+            _peak_value = _tail_profile[0]
+            if _peak_value <= 0:
+                return None
+
+            _tail_norm = np.minimum.accumulate(_tail_profile / _peak_value)
+            _dist_90_px, _idx_90 = _interpolate_crossing(
+                _tail_distances_px, _tail_norm, 0.90
+            )
+            if _dist_90_px is None:
+                return None
+
+            _dist_10_px, _ = _interpolate_crossing(
+                _tail_distances_px, _tail_norm, 0.10, _start_idx=_idx_90
+            )
+            if _dist_10_px is None:
+                return None
+
+            return _dist_10_px - _dist_90_px
+
+        _w0 = _get_width(_dist_centers_px, _p_0)
+        _w6 = _get_width(_dist_centers_px, _p_6)
+        if _w0 is not None and _w0 >= 0:
             widths_0.append(_w0 * REF_pixel_um)
-        if _w6 is not None:
+        if _w6 is not None and _w6 >= 0:
             widths_6.append(_w6 * REF_pixel_um)
 
     if len(_valid_polygons) > 0:
@@ -1674,12 +2088,20 @@ def _(
             # Convert physical coordinates (μm) to pixel indices
             # Account for coordinate offset from cropping
             _pts_physical = np.column_stack((_xs, _ys))
-            _pts_px = (_pts_physical - np.array([_x_min, _y_min])) / REF_pixel_um
+            _pts_px = (
+                _pts_physical - np.array([_x_min, _y_min])
+            ) / REF_pixel_um
             _px_x = _pts_px[:, 0]
             _px_y = _pts_px[:, 1]
 
-            _x0, _x1 = int(np.floor(np.min(_px_x))), int(np.ceil(np.max(_px_x)))
-            _y0, _y1 = int(np.floor(np.min(_px_y))), int(np.ceil(np.max(_px_y)))
+            _x0, _x1 = (
+                int(np.floor(np.min(_px_x))),
+                int(np.ceil(np.max(_px_x))),
+            )
+            _y0, _y1 = (
+                int(np.floor(np.min(_px_y))),
+                int(np.ceil(np.max(_px_y))),
+            )
 
             # Pad by 30 pixels to capture background
             _pad = 30
@@ -1697,22 +2119,32 @@ def _(
             _crop_draw = ImageDraw.Draw(_crop_mask_img)
 
             _pts_crop = _pts_px - np.array([_x0_pad, _y0_pad])
-            _crop_draw.polygon([tuple(_p) for _p in _pts_crop], outline=1, fill=1)
+            _crop_draw.polygon(
+                [tuple(_p) for _p in _pts_crop], outline=1, fill=1
+            )
             _crop_mask = np.array(_crop_mask_img)
 
-            _patch_0 = MALDI_transform_0.values[_y0_pad:_y1_pad, _x0_pad:_x1_pad]
-            _patch_6 = MALDI_transform_1.values[_y0_pad:_y1_pad, _x0_pad:_x1_pad]
+            _patch_0 = MALDI_transform_0.values[
+                _y0_pad:_y1_pad, _x0_pad:_x1_pad
+            ]
+            _patch_6 = MALDI_transform_1.values[
+                _y0_pad:_y1_pad, _x0_pad:_x1_pad
+            ]
             _append_roi_metrics(_crop_mask, _patch_0, _patch_6)
     else:
         _labeled_mask, _n_components = label(mask_xr.values > 0)
         _component_slices = find_objects(_labeled_mask)
         _min_component_area_px = 25
 
-        for _label_idx, _component_slice in enumerate(_component_slices, start=1):
+        for _label_idx, _component_slice in enumerate(
+            _component_slices, start=1
+        ):
             if _component_slice is None:
                 continue
 
-            _crop_mask = (_labeled_mask[_component_slice] == _label_idx).astype(np.uint8)
+            _crop_mask = (
+                _labeled_mask[_component_slice] == _label_idx
+            ).astype(np.uint8)
             if np.sum(_crop_mask) < _min_component_area_px:
                 continue
 
@@ -1753,17 +2185,108 @@ def _(REF_pixel_um, radial_profile_df, widths_0, widths_6):
     _norm_0 = radial_profile_df["Iteration_0_norm"].to_numpy()
     _norm_6 = radial_profile_df["Iteration_6_norm"].to_numpy()
 
+    def _prepare_edge_tail(norm_profile):
+        _profile = np.asarray(norm_profile, dtype=np.float64)
+        _distances = np.asarray(_dist_um, dtype=np.float64)
+        _valid = np.isfinite(_profile) & np.isfinite(_distances)
+        _profile = _profile[_valid]
+        _distances = _distances[_valid]
+
+        _outside = _distances >= 0
+        if np.any(_outside):
+            _peak_idx = np.where(_outside)[0][np.argmax(_profile[_outside])]
+        else:
+            _peak_idx = int(np.argmax(_profile))
+
+        _tail_distances = _distances[_peak_idx:]
+        _tail_profile = np.minimum.accumulate(_profile[_peak_idx:])
+        return _tail_distances, _tail_profile
+
     def _get_transition_coords(norm_profile):
-        _indices_90 = np.where(norm_profile <= 0.90)[0]
-        _indices_10 = np.where(norm_profile <= 0.10)[0]
-        _idx_90 = _indices_90[0] if len(_indices_90) > 0 else 0
-        _idx_10 = (
-            _indices_10[0] if len(_indices_10) > 0 else len(norm_profile) - 1
-        )
-        return _dist_um[_idx_90], _dist_um[_idx_10]
+        _tail_distances, _tail_profile = _prepare_edge_tail(norm_profile)
+
+        def _interpolate_crossing(_threshold, _start_idx=0):
+            _crossings = np.where(_tail_profile[_start_idx:] <= _threshold)[0]
+            if len(_crossings) == 0:
+                return _tail_distances[-1], len(_tail_distances) - 1
+
+            _idx = _start_idx + _crossings[0]
+            if _idx == 0:
+                return _tail_distances[0], _idx
+
+            _x0 = _tail_distances[_idx - 1]
+            _x1 = _tail_distances[_idx]
+            _y0 = _tail_profile[_idx - 1]
+            _y1 = _tail_profile[_idx]
+            if np.isclose(_y0, _y1):
+                return _x1, _idx
+
+            _fraction = (_threshold - _y0) / (_y1 - _y0)
+            return _x0 + _fraction * (_x1 - _x0), _idx
+
+        _dist_90, _idx_90 = _interpolate_crossing(0.90)
+        _dist_10, _ = _interpolate_crossing(0.10, _start_idx=_idx_90)
+        return _dist_90, _dist_10
+
+    def _get_lsf_fwhm_um(norm_profile):
+        _tail_distances, _tail_profile = _prepare_edge_tail(norm_profile)
+        if len(_tail_distances) < 3:
+            return np.nan
+
+        _lsf = np.clip(-np.gradient(_tail_profile, _tail_distances), 0.0, None)
+        _peak = np.max(_lsf)
+        if not np.isfinite(_peak) or _peak <= 0:
+            return np.nan
+
+        _half_max = 0.5 * _peak
+        _above_half = np.where(_lsf >= _half_max)[0]
+        if len(_above_half) == 0:
+            return np.nan
+
+        _left_idx = int(_above_half[0])
+        _right_idx = int(_above_half[-1])
+
+        def _interp(_x0, _x1, _y0, _y1, _target):
+            if np.isclose(_y0, _y1):
+                return _x1
+            _fraction = (_target - _y0) / (_y1 - _y0)
+            return _x0 + _fraction * (_x1 - _x0)
+
+        if _left_idx == 0:
+            _left_cross = _tail_distances[0]
+        else:
+            _left_cross = _interp(
+                _tail_distances[_left_idx - 1],
+                _tail_distances[_left_idx],
+                _lsf[_left_idx - 1],
+                _lsf[_left_idx],
+                _half_max,
+            )
+
+        if _right_idx == len(_lsf) - 1:
+            _right_cross = _tail_distances[-1]
+        else:
+            _right_cross = _interp(
+                _tail_distances[_right_idx],
+                _tail_distances[_right_idx + 1],
+                _lsf[_right_idx],
+                _lsf[_right_idx + 1],
+                _half_max,
+            )
+
+        return float(_right_cross - _left_cross)
 
     _t90_0, _t10_0 = _get_transition_coords(_norm_0)
     _t90_6, _t10_6 = _get_transition_coords(_norm_6)
+
+    lsf_fwhm_um_0 = _get_lsf_fwhm_um(_norm_0)
+    lsf_fwhm_um_6 = _get_lsf_fwhm_um(_norm_6)
+    lsf_fwhm_px_0 = (
+        lsf_fwhm_um_0 / REF_pixel_um if np.isfinite(lsf_fwhm_um_0) else np.nan
+    )
+    lsf_fwhm_px_6 = (
+        lsf_fwhm_um_6 / REF_pixel_um if np.isfinite(lsf_fwhm_um_6) else np.nan
+    )
 
     # 1. Knife-edge test plot on global profile
     _curve_0 = hv.Curve((_dist_um, _norm_0), label="Iteration 0 (Raw)").opts(
@@ -1844,6 +2367,10 @@ def _(REF_pixel_um, radial_profile_df, widths_0, widths_6):
         edge_width_px_6,
         edge_width_um_0,
         edge_width_um_6,
+        lsf_fwhm_px_0,
+        lsf_fwhm_px_6,
+        lsf_fwhm_um_0,
+        lsf_fwhm_um_6,
     )
 
 
@@ -1852,6 +2379,14 @@ def _(
     REF_pixel_um,
     auc_0,
     auc_6,
+    average_precision_0,
+    average_precision_6,
+    best_pixel_f1_0,
+    best_pixel_f1_6,
+    boundary_f1_0,
+    boundary_f1_6,
+    cohens_d_0,
+    cohens_d_6,
     corr_0_vs_6_in,
     corr_0_vs_6_out,
     corr_he_in_0,
@@ -1877,8 +2412,21 @@ def _(
     edge_width_sd_6,
     edge_width_um_0,
     edge_width_um_6,
+    enrichment_ratio_0,
+    enrichment_ratio_6,
+    hausdorff95_um_0,
+    hausdorff95_um_6,
+    lsf_fwhm_px_0,
+    lsf_fwhm_px_6,
+    lsf_fwhm_um_0,
+    lsf_fwhm_um_6,
+    mean_surface_distance_um_0,
+    mean_surface_distance_um_6,
+    nmi_ref_0,
+    nmi_ref_6,
+    pr_auc_0,
+    pr_auc_6,
     radial_profile_plot,
-    sobel_edges_plot,
     widths_0,
     widths_6,
 ):
@@ -1887,9 +2435,13 @@ def _(
     _display_cv_mean_6 = cv_mean_6 if len(cvs_6) > 0 else cv_in_6
     _display_cv_sd_6 = cv_sd_6 if len(cvs_6) > 1 else 0.0
 
-    _display_edge_width_mean_0 = edge_width_mean_0 if len(widths_0) > 0 else edge_width_um_0
+    _display_edge_width_mean_0 = (
+        edge_width_mean_0 if len(widths_0) > 0 else edge_width_um_0
+    )
     _display_edge_width_sd_0 = edge_width_sd_0 if len(widths_0) > 1 else 0.0
-    _display_edge_width_mean_6 = edge_width_mean_6 if len(widths_6) > 0 else edge_width_um_6
+    _display_edge_width_mean_6 = (
+        edge_width_mean_6 if len(widths_6) > 0 else edge_width_um_6
+    )
     _display_edge_width_sd_6 = edge_width_sd_6 if len(widths_6) > 1 else 0.0
 
     _report = mo.md(
@@ -1899,9 +2451,19 @@ def _(
         | Metric | Iteration 0 (Raw) | Iteration 6 (Deconvolved) | Description |
         |---|---|---|---|
         | **ROC-AUC** | `{auc_0:.4f}` | `{auc_6:.4f}` | Area under the ROC curve (higher is better) |
+        | **PR-AUC** | `{pr_auc_0:.4f}` | `{pr_auc_6:.4f}` | Precision-recall area under curve (better for sparse ROIs) |
+        | **Average Precision** | `{average_precision_0:.4f}` | `{average_precision_6:.4f}` | Average precision summary of detection quality |
+        | **Best Pixel F1** | `{best_pixel_f1_0:.4f}` | `{best_pixel_f1_6:.4f}` | Best F1 over MALDI thresholds against ROI mask |
         | **Intra-ROI CV** | `{_display_cv_mean_0:.4f} ± {_display_cv_sd_0:.4f}` | `{_display_cv_mean_6:.4f} ± {_display_cv_sd_6:.4f}` | Coefficient of variation inside ROIs (lower is smoother) |
+        | **Inside/Outside Enrichment** | `{enrichment_ratio_0:.4f}` | `{enrichment_ratio_6:.4f}` | Mean ROI intensity divided by mean background intensity |
+        | **Cohen's d (In vs. Out)** | `{cohens_d_0:.4f}` | `{cohens_d_6:.4f}` | Effect size separating ROI and background intensities |
+        | **Boundary F1 (@ 2 px)** | `{boundary_f1_0:.4f}` | `{boundary_f1_6:.4f}` | ROI-boundary agreement after thresholding MALDI at best pixel F1 |
+        | **Mean Surface Distance** | `{mean_surface_distance_um_0:.2f} µm` | `{mean_surface_distance_um_6:.2f} µm` | Mean bidirectional boundary distance (lower is better) |
+        | **95% Hausdorff Distance** | `{hausdorff95_um_0:.2f} µm` | `{hausdorff95_um_6:.2f} µm` | Robust worst-case boundary mismatch (lower is better) |
         | **Edge Rise Distance** | `{_display_edge_width_mean_0:.2f} ± {_display_edge_width_sd_0:.2f} µm` (`{_display_edge_width_mean_0 / REF_pixel_um:.1f} ± {_display_edge_width_sd_0 / REF_pixel_um:.1f} px`) | `{_display_edge_width_mean_6:.2f} ± {_display_edge_width_sd_6:.2f} µm` (`{_display_edge_width_mean_6 / REF_pixel_um:.1f} ± {_display_edge_width_sd_6 / REF_pixel_um:.1f} px`) | Mean individual ROI edge width (90% to 10% drop, lower is sharper) |
         | *Global Edge Rise* | `{edge_width_um_0:.2f} µm` ({edge_width_px_0} px) | `{edge_width_um_6:.2f} µm` ({edge_width_px_6} px) | Global transition width (90% to 10% drop on average profile) |
+        | **LSF FWHM** | `{lsf_fwhm_um_0:.2f} µm` (`{lsf_fwhm_px_0:.1f} px`) | `{lsf_fwhm_um_6:.2f} µm` (`{lsf_fwhm_px_6:.1f} px`) | Full width at half maximum of the line-spread function |
+        | **Normalized Mutual Information** | `{nmi_ref_0:.4f}` | `{nmi_ref_6:.4f}` | Binned NMI between reference image and MALDI intensity map |
 
         #### Pearson Correlation Coefficients
 
@@ -1923,10 +2485,8 @@ def _(
             radial_profile_plot,
             mo.md("#### Edge Rise Distance (Knife-Edge Test & Boxplot)"),
             edge_rise_plots,
-            mo.md(
-                "#### Sobel Gradients (Visualizing Edge Sharpness/Smoothness)"
-            ),
-            sobel_edges_plot,
+            # mo.md("#### Sobel Gradients (Visualizing Edge Sharpness/Smoothness)"),
+            # sobel_edges_plot,
         ]
     )
     mo.vstack([_report, _plots])

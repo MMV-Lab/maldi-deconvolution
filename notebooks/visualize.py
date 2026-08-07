@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.13"
+__generated_with = "0.23.14"
 app = marimo.App(width="full")
 
 with app.setup:
@@ -36,7 +36,7 @@ def _():
 @app.cell
 def _():
     widget_selected_file = mo.ui.file_browser(
-        filetypes=[".h5"], multiple=False, initial_path="data"
+        filetypes=[".h5"], multiple=False, 
     )
     mo.vstack(
         [
@@ -67,11 +67,6 @@ def _(widget_selected_file):
             ).callout(kind="success")
         )
     return data_xr, out_dir
-
-
-@app.cell
-def _():
-    return
 
 
 @app.cell

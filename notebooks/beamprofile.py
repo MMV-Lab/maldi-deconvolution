@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.10"
+__generated_with = "0.23.14"
 app = marimo.App(width="columns")
 
 with app.setup:
@@ -264,6 +264,91 @@ def _(global_best_fit):
 
     print(f"Geometric Mean 1/e^2 diameter: {4 * np.sqrt(sig_x * sig_y):.4f} um")
     print(f"Aritmetic Mean 1/e^2 diameter: {2 * (sig_x + sig_y):.4f} um")
+    return
+
+
+@app.cell
+def _(X, Y, avg_img, global_best_fit, std_img):
+    hv.extension("matplotlib")
+
+    # Define the dimensions with units
+    _x_dim = hv.Dimension("x", label=r"x ($\mu$m)")
+    _y_dim = hv.Dimension("y", label=r"y ($\mu$m)")
+
+    # Peak location (the "maximum") in the original coordinate system
+    _x_center = global_best_fit.x_mean.value
+    _y_center = global_best_fit.y_mean.value
+
+    # Original coordinate arrays (needed for indexing / evaluating the fit)
+    _x_vals_orig = avg_img.x.values
+    _y_vals_orig = avg_img.y.values
+
+    # Index of the slice through the peak
+    _idx_x = np.abs(_x_vals_orig - _x_center).argmin()
+    _idx_y = np.abs(_y_vals_orig - _y_center).argmin()
+
+    # Shifted coordinates so the peak sits at (0, 0)
+    _x_vals = _x_vals_orig - _x_center
+    _y_vals = _y_vals_orig - _y_center
+
+    # Prepare X-profile data (horizontal slice at y_center)
+    _x_data_prof = avg_img.values[_idx_y, :]
+    _x_err_prof = std_img.values[_idx_y, :]
+    _x_fit_prof = global_best_fit(_x_vals_orig, _y_center)
+
+    # Prepare Y-profile data (vertical slice at x_center)
+    _y_data_prof = avg_img.values[:, _idx_x]
+    _y_err_prof = std_img.values[:, _idx_x]
+    _y_fit_prof = global_best_fit(_x_center, _y_vals_orig)
+
+    # Main Plot: Original Image + Fit Contours (shown in peak-centered coordinates)
+    _img = hv.Image(
+        (_x_vals, _y_vals, avg_img.values), kdims=[_x_dim, _y_dim], vdims=["Intensity"]
+    )
+    _fit_img = hv.Image(
+        (_x_vals, _y_vals, global_best_fit(X, Y)),
+        kdims=[_x_dim, _y_dim],
+        vdims=["Intensity"],
+    )
+    _contours = hv.operation.contours(_fit_img, levels=6)
+    _main_plot = _img * _contours
+
+    # Top Pane: X-profile (Data + Errors + Fit)
+    _top_scatter = hv.Scatter(
+        (_x_vals, _x_data_prof), kdims=[_x_dim], vdims=["Intensity"]
+    )
+    _top_errs = hv.ErrorBars(
+        (_x_vals, _x_data_prof, _x_err_prof),
+        kdims=[_x_dim],
+        vdims=["Intensity", "Error"],
+    )
+    _top_fit = hv.Curve((_x_vals, _x_fit_prof), kdims=[_x_dim], vdims=["Intensity"])
+    _top_plot = _top_scatter * _top_errs * _top_fit
+
+    # Right Pane: Y-profile (Data + Errors + Fit)
+    _right_scatter = hv.Scatter(
+        (_y_vals, _y_data_prof), kdims=[_y_dim], vdims=["Intensity"]
+    )
+    _right_errs = hv.ErrorBars(
+        (_y_vals, _y_data_prof, _y_err_prof),
+        kdims=[_y_dim],
+        vdims=["Intensity", "Error"],
+    )
+    _right_fit = hv.Curve((_y_vals, _y_fit_prof), kdims=[_y_dim], vdims=["Intensity"])
+    _right_plot = _right_scatter * _right_errs * _right_fit
+
+    _layout = _main_plot << _right_plot << _top_plot
+    _layout.opts(
+        opts.Image(cmap="viridis"),
+        opts.Contours(color="white", linewidth=1.5),
+        opts.Scatter(color="black", marker="o"),
+        opts.ErrorBars(color="black", linewidth=1),
+        opts.Curve(color="red", linewidth=2),
+        opts.AdjointLayout(),  # Scales the overall figure size
+    )
+
+    hv.render(_layout)
+    hv.save(_layout, "newbeamprofile.svg", fmt="svg", dpi=1200)
     return
 
 
