@@ -18,18 +18,23 @@ with app.setup:
     import hvplot.xarray
     import hvplot.polars
 
-    from scipy.optimize import curve_fit
-    from scipy.signal import find_peaks
-    from skimage.filters import threshold_li, threshold_triangle
-    import scipy.stats as stats
+    import sys
+    from pathlib import Path
 
-    from extract_data import read_imzml_to_xarray
+    _root_dir = Path(__file__).resolve().parent.parent
+    if str(_root_dir) not in sys.path:
+        sys.path.append(str(_root_dir))
 
-    hvplot.extension("matplotlib", "bokeh")
-    hvplot.output(fig="svg")
+    from src.imzml_io import read_imzml_to_xarray, find_peaks_from_imzml, save_dataarray
+    from src.decay_profile import (
+        compute_tissue_mask,
+        compute_pass_statistics,
+        fit_decay_models,
+    )
+    from src.plotting import register_hv_backends, set_hv_backend
 
-    hv.extension('matplotlib')
-    hv.output(fig='svg')
+    register_hv_backends("matplotlib", "bokeh")
+    set_hv_backend("matplotlib")
 
 
 @app.cell
@@ -76,77 +81,6 @@ def _(path_list):
     return (imzml_list,)
 
 
-@app.function
-def find_peaks_from_imzml(
-    filepath,
-    min_mz: float = 650.0,
-    max_mz: float = 850.0,
-    bin_width: float = 0.05,
-    top_n_peaks: int = 10,
-    prominence_factor: float = 5.0,
-    min_peak_separation: float = 0.5,
-):
-    """Build a mean spectrum histogram from an imzML file and return the top peaks.
-
-    Parameters
-    ----------
-    filepath:
-        Path to the .imzml file.
-    min_mz, max_mz:
-        m/z range to consider.
-    bin_width:
-        Histogram bin width in Da. Controls both the spectrum resolution
-        and therefore the precision of detected peak centers.
-    top_n_peaks:
-        Number of highest-intensity peaks to return.
-    prominence_factor:
-        Peak prominence threshold as a multiple of the median noise floor.
-    min_peak_separation:
-        Minimum distance between two accepted peaks in Da.
-        Converted to bins as ``max(1, int(min_peak_separation / bin_width))``.
-
-    Returns
-    -------
-    target_mzs : list[float]
-        Detected peak centers sorted by descending intensity, up to ``top_n_peaks``.
-    mz_axis : np.ndarray
-        Bin centers of the mean spectrum.
-    mean_spectrum : np.ndarray
-        Mean intensity per bin across all pixels.
-    """
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        parser = ImzMLParser(filepath)
-
-    all_coords = parser.coordinates
-    mz_bins = np.arange(min_mz, max_mz + bin_width, bin_width)
-    mz_axis = (mz_bins[:-1] + mz_bins[1:]) / 2
-    mean_spectrum = np.zeros_like(mz_axis, dtype=np.float64)
-
-    for spec_idx, _ in enumerate(all_coords):
-        mzs, ints = parser.getspectrum(spec_idx)
-        mask = (mzs >= min_mz) & (mzs <= max_mz)
-        hist, _ = np.histogram(mzs[mask], bins=mz_bins, weights=ints[mask])
-        mean_spectrum += hist
-
-    mean_spectrum /= len(all_coords)
-
-    noise_floor = np.median(mean_spectrum)
-    distance_bins = max(1, int(min_peak_separation / bin_width))
-    peak_indices, _ = find_peaks(
-        mean_spectrum,
-        prominence=noise_floor * prominence_factor,
-        distance=distance_bins,
-    )
-
-    peak_mzs = mz_axis[peak_indices]
-    peak_ints = mean_spectrum[peak_indices]
-    sort_idx = np.argsort(peak_ints)[::-1]
-    target_mzs = peak_mzs[sort_idx][:top_n_peaks].tolist()
-
-    return target_mzs, mz_axis, mean_spectrum
-
-
 @app.cell
 def _():
     return
@@ -177,7 +111,7 @@ def _(imzml_list, path_list):
         title="Step 1: Automatic Peak Finding",
         subtitle="Building Mean Spectrum of Pass 1...",
     ) as bar:
-        target_mzs, mz_axis, mean_spectrum = find_peaks_from_imzml(
+        target_mzs, spectrum_df = find_peaks_from_imzml(
             path_list[0],
             min_mz=min_mz,
             max_mz=max_mz,
@@ -223,66 +157,16 @@ def _(imzml_list, path_list):
     # ==========================================
 
     pass1 = passes_xr.sel(pass_num=1)
-    pass1_clipped = pass1.clip(
-        max=pass1.quantile(0.9, dim=["y", "x"], skipna=True)
-    ).drop_vars("quantile")
-
-    thresholds = xr.apply_ufunc(
-        # threshold_triangle,
-        threshold_li,
-        # pass1,
-        pass1_clipped,
-        input_core_dims=[["y", "x"]],  # Core dimensions the function needs
-        vectorize=True,
-    )
-
-    mz_masks = pass1 > thresholds
-    mz_masks.name = "tissue_mask"
-
+    mz_masks = compute_tissue_mask(pass1)
 
     # ==========================================================================
 
     masked_passes = passes_xr.where(mz_masks)
 
-    spatial_dims = ["y", "x"]
-
-    stats_ds = xr.Dataset(
-        {
-            "count": masked_passes.count(dim=spatial_dims),
-            "mean": masked_passes.mean(dim=spatial_dims, skipna=True),
-            "median": masked_passes.median(dim=spatial_dims, skipna=True),
-            "std": masked_passes.std(dim=spatial_dims, skipna=True, ddof=1),
-            "var": masked_passes.var(dim=spatial_dims, skipna=True),
-            "min": masked_passes.min(dim=spatial_dims, skipna=True),
-            "max": masked_passes.max(dim=spatial_dims, skipna=True),
-            "sum": masked_passes.sum(dim=spatial_dims, skipna=True),
-            "q25": masked_passes.quantile(
-                0.25, dim=spatial_dims, skipna=True
-            ).drop_vars("quantile"),
-            "q75": masked_passes.quantile(
-                0.75, dim=spatial_dims, skipna=True
-            ).drop_vars("quantile"),
-        }
-    )
-
-    stats_ds["mad"] = xr.apply_ufunc(
-        lambda x: stats.median_abs_deviation(
-            x, axis=(-2, -1), nan_policy="omit", scale="normal"
-        ),
-        masked_passes,
-        input_core_dims=[spatial_dims],
-        vectorize=True,
-        dask="parallelized",
-    )
-
-
-    stats_ds["iqr"] = stats_ds["q75"] - stats_ds["q25"]
-    stats_ds["sem"] = stats_ds["std"] / np.sqrt(stats_ds["count"])
-    stats_ds["se_median"] = stats_ds["sem"] * 1.2533
+    stats_ds = compute_pass_statistics(masked_passes)
     return (
         masked_passes,
-        mean_spectrum,
-        mz_axis,
+        spectrum_df,
         n_passes,
         passes_xr,
         stats_ds,
@@ -304,21 +188,23 @@ def _():
 
 
 @app.cell
-def _(mean_spectrum, mz_axis, target_mzs):
-    _spectrum_df = pl.DataFrame({"m_z": mz_axis, "intensity": mean_spectrum})
+def _(spectrum_df, target_mzs):
+    _mz_axis = spectrum_df["m_z"].to_numpy()
+    _mean_spectrum = spectrum_df["intensity"].to_numpy()
+
     _peaks_df = pl.DataFrame(
         {
             "m_z": target_mzs,
             "intensity": [
-                mean_spectrum[
-                    int(round((mz - mz_axis[0]) / (mz_axis[1] - mz_axis[0])))
+                _mean_spectrum[
+                    int(round((mz - _mz_axis[0]) / (_mz_axis[1] - _mz_axis[0])))
                 ]
                 for mz in target_mzs
             ],
         }
     )
 
-    _spectrum_plot = _spectrum_df.hvplot.line(
+    _spectrum_plot = spectrum_df.hvplot.line(
         x="m_z",
         y="intensity",
         label="Mean spectrum",
@@ -335,12 +221,6 @@ def _(mean_spectrum, mz_axis, target_mzs):
         color="red",
         size=120,
     )
-    _spectrum_plot * _peaks_plot
-    return
-
-
-@app.cell
-def _():
     _spectrum_plot * _peaks_plot
     return
 
@@ -400,8 +280,8 @@ def _(decay_df, export_button, passes_xr, path_list):
 
     decay_df.write_csv(_out_path, float_scientific=False, float_precision=16)
 
-    passes_xr.to_netcdf(
-        path_list[0].parent / f"multiple_passes_filtered.h5",
+    save_dataarray(
+        passes_xr, path_list[0].parent / f"multiple_passes_filtered.h5"
     )
 
     mo.md(f"""Saved decay profile as `{_out_path.name}` in:
@@ -423,126 +303,17 @@ def _(masked_passes, passes_xr):
 
 @app.cell
 def _(decay_df, n_passes):
-    # ==========================================
-    # DEFINE MODELS
-    # ==========================================
-    def model_exp(x, a, b, c):
-        return a * np.exp(-b * x) + c
-
-
-    def model_biexp(x, a, b, c, d, e):
-        return a * np.exp(-b * x) + c * np.exp(-d * x) + e
-
-
-    def model_power(x, a, b, c):
-        return a * np.power(x, -b) + c
-
-
-    def model_sigmoid(x, L, k, x0, b):
-        return L / (1 + np.exp(k * (x - x0))) + b
-
-
-    model_definitions = {
-        "Single Exp": (model_exp, [1, 0.5, 0]),
-        "Bi-Exp": (model_biexp, [0.5, 1.0, 0.5, 0.1, 0]),
-        "Power Law": (model_power, [1, 0.5, 0]),
-        "Sigmoid": (model_sigmoid, [1, 1, n_passes / 2, 0]),
-    }
-
-    # ==========================================
-    # PREPARE DATA
-    # ==========================================
     x_data = decay_df["pass_num"].to_numpy()
     y_data = decay_df["value"].to_numpy()
     y_weights = decay_df["error"].to_numpy()
 
-    x_fit = np.linspace(1, n_passes, 100)
-
-    # ==========================================
-    # WEIGHTED FITTING
-    # ==========================================
-
-    results_dict = {}
-    # Find the maximum number of parameters to allow for padding in the parameters array
-    max_params = max(len(p0) for _, (_, p0) in model_definitions.items())
-
-    for name, (func, p0) in model_definitions.items():
-        try:
-            popt, _ = curve_fit(
-                func,
-                x_data,
-                y_data,
-                p0=p0,
-                sigma=y_weights,
-                absolute_sigma=True,
-                maxfev=10000,
-            )
-
-            # 1. Predictions for the fit curve
-            y_fit_vals = func(x_fit, *popt)
-
-            # 2. Metrics
-            res = y_data - func(x_data, *popt)
-            chi_sq = np.sum((res / y_weights) ** 2)
-            red_chi_sq = chi_sq / (len(x_data) - len(p0))
-            mse = np.mean(res**2)
-
-            # 3. Store results in a nested dict to build the Dataset later
-            # We pad parameters with NaN if they have different lengths
-            padded_params = np.full(max_params, np.nan)
-            padded_params[: len(popt)] = popt
-
-            results_dict[name] = {
-                "y_fit": y_fit_vals,
-                "weighted_mse": mse,
-                "reduced_chi_sq": red_chi_sq,
-                "params": padded_params,
-            }
-
-        except Exception as e:
-            print(f"Fit failed for {name}: {e}")
-
-
-    model_names = list(results_dict.keys())
-
-    fit_ds = xr.Dataset(
-        data_vars={
-            "y_fit": (
-                ["model", "x_fit"],
-                [results_dict[m]["y_fit"] for m in model_names],
-            ),
-            "mse": (
-                ["model"],
-                [results_dict[m]["weighted_mse"] for m in model_names],
-            ),
-            "chi_sq_red": (
-                ["model"],
-                [results_dict[m]["reduced_chi_sq"] for m in model_names],
-            ),
-            "params": (
-                ["model", "param_idx"],
-                [results_dict[m]["params"] for m in model_names],
-            ),
-        },
-        coords={
-            "model": model_names,
-            "x_fit": x_fit,
-            "param_idx": np.arange(max_params),
-        },
-        attrs={"description": "Curve fitting results for multiple models"},
-    )
-    return fit_ds, results_dict
+    fit_ds = fit_decay_models(x_data, y_data, y_weights, n_passes)
+    return (fit_ds,)
 
 
 @app.cell
 def _():
     hvplot.output.info()
-    return
-
-
-@app.cell
-def _(results_dict):
-    results_dict
     return
 
 

@@ -19,14 +19,21 @@ with app.setup(hide_code=True):
     import hvplot
     import hvplot.xarray
     from datashader.transfer_functions import shade, stack
-    from matplotlib.colors import LinearSegmentedColormap
-
-    hv.extension("matplotlib")
-    hv.output(backend="matplotlib", fig="svg")
 
     from PIL import Image, ImageChops
 
     from pyimzml.ImzMLParser import ImzMLParser
+
+    import sys
+    from pathlib import Path as _Path
+
+    _root_dir = _Path(__file__).resolve().parent.parent
+    if str(_root_dir) not in sys.path:
+        sys.path.append(str(_root_dir))
+
+    from src.plotting import set_hv_backend, decay_curve_group_overlay
+
+    set_hv_backend("matplotlib")
 
 
 @app.cell(hide_code=True)
@@ -197,7 +204,7 @@ def _():
 
 @app.cell
 def _():
-    hv.extension("matplotlib")
+    set_hv_backend("matplotlib", fig_format=None)
 
     _base = Path(
         "/mnt/eternus/users/Davide/maldi-deconv-rl/data/decay_curve/SMALDI 5/Cerebellum"
@@ -216,36 +223,15 @@ def _():
 
     _all = pl.concat(_curves).to_pandas()
 
-    _colors = {"A42": "#1f77b4", "A43.5": "#ff7f0e", "A45": "#2ca02c"}
-    _markers = {"A42": "o", "A43.5": "s", "A45": "^"}
-
-    decay_overlay = hv.NdOverlay(
-        {
-            _label: (
-                hv.ErrorBars(
-                    _all[_all["setting"] == _label],
-                    kdims=["pass_num"],
-                    vdims=["value", "error"],
-                ).opts(color=_colors[_label], alpha=0.4)
-                * hv.Curve(
-                    _all[_all["setting"] == _label],
-                    kdims=["pass_num"],
-                    vdims=["value"],
-                    label=_label,
-                ).opts(color=_colors[_label])
-                * hv.Scatter(
-                    _all[_all["setting"] == _label],
-                    kdims=["pass_num"],
-                    vdims=["value"],
-                ).opts(color=_colors[_label], marker=_markers[_label], s=50)
-            )
-            for _label in _settings
-        }
-    ).opts(
-        hv.opts.Curve(xlabel="Pass", ylabel="Normalised Intensity"),
-        hv.opts.NdOverlay(
-            title="Decay Curves – 3 Laser Energy Settings",
-        ),
+    decay_overlay = decay_curve_group_overlay(
+        _all,
+        group_col="setting",
+        x_col="pass_num",
+        y_col="value",
+        yerr_col="error",
+        colors={"A42": "#1f77b4", "A43.5": "#ff7f0e", "A45": "#2ca02c"},
+        markers={"A42": "o", "A43.5": "s", "A45": "^"},
+        title="Decay Curves – 3 Laser Energy Settings",
     )
 
     decay_overlay
@@ -287,34 +273,15 @@ def _():
 
     _all2 = pl.concat(_curves2).to_pandas()
 
-    _colors2 = {"Cerebellum": "#1f77b4", "Kidney": "#d62728"}
-    _markers2 = {"Cerebellum": "o", "Kidney": "s"}
-
-    tissue_overlay = hv.NdOverlay(
-        {
-            _label: (
-                hv.ErrorBars(
-                    _all2[_all2["tissue"] == _label],
-                    kdims=["pass_num"],
-                    vdims=["value", "error"],
-                ).opts(color=_colors2[_label], alpha=0.4)
-                * hv.Curve(
-                    _all2[_all2["tissue"] == _label],
-                    kdims=["pass_num"],
-                    vdims=["value"],
-                    label=_label,
-                ).opts(color=_colors2[_label])
-                * hv.Scatter(
-                    _all2[_all2["tissue"] == _label],
-                    kdims=["pass_num"],
-                    vdims=["value"],
-                ).opts(color=_colors2[_label], marker=_markers2[_label], s=50)
-            )
-            for _label in _tissues
-        }
-    ).opts(
-        hv.opts.Curve(xlabel="Pass", ylabel="Normalised Intensity"),
-        hv.opts.NdOverlay(title="Decay Curves – Cerebellum vs Kidney (A43.5)"),
+    tissue_overlay = decay_curve_group_overlay(
+        _all2,
+        group_col="tissue",
+        x_col="pass_num",
+        y_col="value",
+        yerr_col="error",
+        colors={"Cerebellum": "#1f77b4", "Kidney": "#d62728"},
+        markers={"Cerebellum": "o", "Kidney": "s"},
+        title="Decay Curves – Cerebellum vs Kidney (A43.5)",
     )
 
     tissue_overlay
@@ -347,36 +314,15 @@ def _():
 
     _all_neg = pl.concat(_curves_neg).to_pandas()
 
-    _colors_neg = {"A42": "#1f77b4", "A43.5": "#ff7f0e"}
-    _markers_neg = {"A42": "o", "A43.5": "s"}
-
-    neg_overlay = hv.NdOverlay(
-        {
-            _label: (
-                hv.ErrorBars(
-                    _all_neg[_all_neg["setting"] == _label],
-                    kdims=["pass_num"],
-                    vdims=["value", "error"],
-                ).opts(color=_colors_neg[_label], alpha=0.4)
-                * hv.Curve(
-                    _all_neg[_all_neg["setting"] == _label],
-                    kdims=["pass_num"],
-                    vdims=["value"],
-                    label=_label,
-                ).opts(color=_colors_neg[_label])
-                * hv.Scatter(
-                    _all_neg[_all_neg["setting"] == _label],
-                    kdims=["pass_num"],
-                    vdims=["value"],
-                ).opts(
-                    color=_colors_neg[_label], marker=_markers_neg[_label], s=50
-                )
-            )
-            for _label in _neg_settings
-        }
-    ).opts(
-        hv.opts.Curve(xlabel="Pass", ylabel="Normalised Intensity"),
-        hv.opts.NdOverlay(title="Decay Curves – Negative Mode (Cerebellum)"),
+    neg_overlay = decay_curve_group_overlay(
+        _all_neg,
+        group_col="setting",
+        x_col="pass_num",
+        y_col="value",
+        yerr_col="error",
+        colors={"A42": "#1f77b4", "A43.5": "#ff7f0e"},
+        markers={"A42": "o", "A43.5": "s"},
+        title="Decay Curves – Negative Mode (Cerebellum)",
     )
 
     neg_overlay

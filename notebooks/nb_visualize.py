@@ -7,20 +7,31 @@ with app.setup:
     import marimo as mo
 
     import numpy as np
-    import xarray as xr
 
     import tifffile
     from pathlib import Path
 
-    import matplotlib as mpl
     import panel as pn
     import holoviews as hv
     import hvplot
     import hvplot.xarray
     from datashader.transfer_functions import shade, stack
-    from matplotlib.colors import LinearSegmentedColormap
 
     from PIL import Image, ImageChops
+
+    import sys
+
+    _root_dir = Path(__file__).resolve().parent.parent
+    if str(_root_dir) not in sys.path:
+        sys.path.append(str(_root_dir))
+
+    from src.visualization import (
+        DEFAULT_COLORMAP_NAMES,
+        CMAP_DICT,
+        export_xarray_to_tiff,
+        render_shaded_tiff,
+    )
+    from src.imzml_io import load_dataarray
 
 
 @app.cell
@@ -54,7 +65,7 @@ def _(widget_selected_file):
     if len(widget_selected_file.value) == 1:
         input_file = widget_selected_file.value[0].path
         out_dir = input_file.parent
-        data_xr = xr.open_dataarray(input_file)
+        data_xr = load_dataarray(input_file)
         if "X" in data_xr.dims:
             data_xr = data_xr.rename({"X": "x"})
         if "Y" in data_xr.dims:
@@ -71,56 +82,8 @@ def _(widget_selected_file):
 
 @app.cell
 def _():
-    colormap_names = [
-        "viridis",
-        "plasma",
-        "inferno",
-        "magma",
-        "cividis",
-        "gray",
-    ]
-    colormap_names.extend(
-        [
-            "Greys",
-            "Purples",
-            "Blues",
-            "Greens",
-            "Oranges",
-            "Reds",
-            "YlOrBr",
-            "YlOrRd",
-            "OrRd",
-            "PuRd",
-            "RdPu",
-            "BuPu",
-            "GnBu",
-            "PuBu",
-            "YlGnBu",
-            "PuBuGn",
-            "BuGn",
-            "YlGn",
-        ]
-    )
-
-    linear_configs = {
-        "Linear Red": ["black", "red"],
-        "Linear Green": ["black", "#00ff00"],
-        "Linear Blue": ["black", "blue"],
-        "Linear Cyan": ["black", "cyan"],
-        "Linear Magenta": ["black", "magenta"],
-        "Linear Yellow": ["black", "yellow"],
-    }
-
-    all_names = list(linear_configs.keys()) + colormap_names
-
-    cmap_dict = {}
-    for name in all_names:
-        if name in linear_configs:
-            cmap_dict[name] = LinearSegmentedColormap.from_list(
-                name, linear_configs[name]
-            )
-        else:
-            cmap_dict[name] = mpl.colormaps[name]
+    colormap_names = DEFAULT_COLORMAP_NAMES
+    cmap_dict = CMAP_DICT
     return cmap_dict, colormap_names
 
 
@@ -209,49 +172,13 @@ def _(cmap_dict, data_xr, out_dir):
         export_tiff_button.disabled = True
 
         try:
-            # 1. Metadata Extraction
-            pixel_size_x = data_xr.attrs.get("pixel_size_x", 1.0)
-            pixel_size_y = data_xr.attrs.get("pixel_size_y", 1.0)
-            original_file_name = data_xr.attrs.get(
-                "original_file_name", "data"
-            )
-            tolerance = data_xr.attrs.get("tolerance", 0.0)
-
             tiff_dir = out_dir / "exported_datacube"
-            tiff_dir.mkdir(exist_ok=True)
 
-            total_mz = len(mz_vals)
-
-            for i, mz in enumerate(mz_vals):
-                status_text.value = (
-                    f"⏳ Processing m/z {mz:.4f} ({i + 1}/{total_mz})"
-                )
-
-                if has_iteration:
-                    # Select stack: (iteration, y, x)
-                    img_stack = data_xr.sel(m_z=mz).values
-                    meta_axes = "TYX"
-                    fname = f"{original_file_name}_mz_{mz:.4f}±{tolerance}_deconvolved.tiff"
-                else:
-                    # Select slice: (y, x)
-                    img_stack = data_xr.sel(m_z=mz).values
-                    meta_axes = "YX"
-                    fname = f"{original_file_name}_mz_{mz:.4f}±{tolerance}_original.tiff"
-
-                save_path = tiff_dir / fname
-
-                tifffile.imwrite(
-                    save_path,
-                    img_stack.astype(np.float32),
-                    imagej=True,
-                    compression="zlib",
-                    photometric="minisblack",
-                    resolution=(1 / pixel_size_x, 1 / pixel_size_y),
-                    metadata={
-                        "axes": meta_axes,
-                        "unit": "um",
-                    },
-                )
+            export_xarray_to_tiff(
+                data_xr,
+                tiff_dir,
+                status_callback=lambda msg: setattr(status_text, "value", f"⏳ {msg}"),
+            )
 
             status_text.value = (
                 f"✅ Success! Saved {len(mz_vals)} files to /exported_tiffs"
@@ -306,28 +233,14 @@ def _(cmap_dict, data_xr, out_dir):
                 data_2d.values, [low_perc_slider.value, high_perc_slider.value]
             )
 
-            shaded = shade(
+            tiff_path = out_dir / f"{base_name}_render.tiff"
+            render_shaded_tiff(
                 data_2d,
                 cmap=cmap_dict[cmap_widget.value],
                 span=(v_min, v_max),
-                how="linear",
-            )
-
-            rgb_array = np.array(shaded.to_pil().convert("RGB"))
-            rgb_array = np.flipud(rgb_array)
-
-            tiff_path = out_dir / f"{base_name}_render.tiff"
-            tifffile.imwrite(
-                tiff_path,
-                rgb_array,
-                imagej=True,
-                compression="zlib",
-                photometric="rgb",
-                resolution=(1 / pixel_size_x, 1 / pixel_size_y),
-                metadata={
-                    "axes": "CYX",
-                    "unit": "um",
-                },
+                output_path=tiff_path,
+                pixel_size_x=pixel_size_x,
+                pixel_size_y=pixel_size_y,
             )
 
             # Save the raw numeric slice (float32), similar to the datacube export.
@@ -686,73 +599,6 @@ def _(
 
         mo.output.append(swatch_grid)
     return
-
-
-@app.function
-def export_xarray_to_tiff(data_array: xr.DataArray, output_dir: Path):
-    """
-    Exports an xarray DataArray to TIFF, handling both single ion images
-    and multi-iteration stacks.
-    """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Extract attributes for resolution calculation
-    pixel_size_x = data_array.attrs.get("pixel_size_x", 1.0)
-    pixel_size_y = data_array.attrs.get("pixel_size_y", 1.0)
-    original_file_name = data_array.attrs.get("original_file_name", "")
-    tolerance = data_array.attrs.get("tolerance", 0.0)
-
-    # 1cm = 10,000 um
-    res_x = 1e4 / pixel_size_x
-    res_y = 1e4 / pixel_size_y
-
-    # Check if 'iteration' dimension exists
-    if "iteration" in data_array.dims:
-        print("Exporting as multi-page TIFF (iterations stack)...")
-        # Loop through m_z to save separate files for each m/z containing all iterations
-        for mz in data_array.m_z.values:
-            # Select specific mz: shape becomes (iteration, y, x)
-            img_stack = data_array.sel(m_z=mz).values
-
-            fname = f"{original_file_name}_mz_{mz:.4f}±{tolerance}_deconvolved.tiff"
-            save_path = output_dir / fname
-
-            tifffile.imwrite(
-                save_path,
-                img_stack.astype(np.float32),
-                imagej=True,
-                compression="zlib",
-                photometric="minisblack",
-                resolution=(res_x, res_y),
-                metadata={
-                    "axes": "TYX",  # Time/Iteration, Y, X
-                    "unit": "um",
-                },
-            )
-            print(f"Saved: {fname}")
-
-    else:
-        print("Exporting as single-page TIFFs...")
-        for mz in data_array.m_z.values:
-            # Select specific mz: shape becomes (y, x)
-            img_slice = data_array.sel(m_z=mz).values
-
-            fname = f"{original_file_name}_mz_{mz:.4f}±{tolerance}_original.tiff"
-            save_path = output_dir / fname
-
-            tifffile.imwrite(
-                save_path,
-                img_slice.astype(np.float32),
-                imagej=True,
-                compression="zlib",
-                photometric="minisblack",
-                resolution=(res_x, res_y),
-                metadata={
-                    "axes": "YX",
-                    "unit": "um",
-                },
-            )
 
 
 @app.cell

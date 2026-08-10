@@ -2,27 +2,42 @@
 MALDI PSF Generator
 ===================
 
-This module provides the MaldiPSFGenerator class for generating Point Spread Functions (PSF)
-tailored for MALDI-Imaging mass spectrometry. It accounts for laser beam geometry, 
-sampling step size, and signal degradation (decay) due to overlapping past laser shots.
+This module provides the `MaldiPSFGenerator` class for generating Point Spread
+Functions (PSF) tailored for MALDI-Imaging mass spectrometry, along with the
+standalone `check_nyquist_sampling` helper used to validate its sampling
+parameters. It accounts for laser beam geometry, sampling step size, raster
+scan direction, and signal degradation (decay) due to overlapping past laser
+shots.
+
+A `MaldiPSFGenerator` instance runs its full pipeline at construction time: it
+builds a fine-resolution simulation grid, accumulates dose from past shots,
+converts dose into decay, computes the final per-shot signal, and integrates
+everything onto a coarse kernel usable directly as a PSF (e.g. for
+deconvolution).
 
 Core Concepts:
 --------------
 1.  **Dose Map (Fine Grid)**:
-    Accumulates exposure from past laser shots at a high resolution (0.05 µm).
-    - `geometric`: Contains **integer-valued floats** (0.0, 1.0, 2.0...). It represents 
+    Accumulates exposure from past laser shots at a high resolution
+    (`sim_res_um`, 0.05 µm by default).
+    - `geometric`: Contains **integer-valued floats** (0.0, 1.0, 2.0...). It represents
       the discrete count of binary overlaps from past shots.
-    - `beam_profile`: Contains **continuous floats**. It represents the sum of 
+    - `beam_profile`: Contains **continuous floats**. It represents the sum of
       Gaussian intensities from past shots, allowing for subtle degradation modeling.
+    "Past" shots are always found assuming a top-left-to-bottom-right raster;
+    `scan_direction` ("tl_br" or "bl_tr") then determines whether this map is
+    vertically flipped to reflect the actual scan direction.
 
 2.  **Decay Map (Fine Grid)**:
-    Transforms the `dose_map` into signal intensity factors (0.0 to 1.0) using 
+    Transforms the `dose_map` into signal intensity factors (0.0 to 1.0) using
     either exponential fitting or linear interpolation. These are always **continuous floats**.
 
 3.  **Pass Map (Coarse Kernel Grid)**:
     A diagnostic map showing how many past laser shots overlap each coarse pixel.
     - Always contains **integers** (0, 1, 2, 3...).
     - It is a purely geometric count of discrete shots, regardless of the `method` used.
+    - Like the dose map, it is computed assuming a top-left-to-bottom-right
+      raster and then flipped per `scan_direction`.
 
 4.  **Spatial Profile**:
     The raw beam shape centered at (0,0):
@@ -30,23 +45,143 @@ Core Concepts:
     - `beam_profile`: A continuous Gaussian profile.
 
 5.  **Final Signal**:
-    The product of the raw `spatial_profile` and the `decay_map`. This represents 
+    The product of the raw `spatial_profile` and the `decay_map`. This represents
     the actual signal density emitted during the current laser shot.
+
+6.  **Kernel Integration (Coarse Grid)**:
+    The fine-grid `spatial_profile` and `final_signal` are summed and
+    normalized onto the `kernel_size` x `kernel_size` output grid
+    (`spatial_kernel`, `final_signal_kernel`) — this coarse, normalized kernel
+    is the actual PSF used downstream (see `MaldiPSFGenerator.to_xarray`).
+
+Persistence:
+------------
+`compute_psf()` is a pure function of the constructor params (no
+randomness anywhere in the pipeline, including the `curve_fit` call), so
+every attribute above -- fine grids included -- is fully and exactly
+re-derivable from those params alone. Rather than writing the fine grids
+(tens of MB at typical `sim_res_um`) to disk, use `MaldiPSFGenerator.save`
+/ `.load` to round-trip just the params plus the already-small coarse
+kernels (a JSON typically well under 1KB); `load_psf_kernels` reads back
+just the kernels, for callers that only need the PSF and don't want to
+pay for reconstructing the instance.
 """
+
+import json
+from pathlib import Path
+from typing import List, Optional, Union
 
 import numpy as np
 from scipy.interpolate import interp1d
 from scipy.optimize import curve_fit
 from dataclasses import dataclass, field
-from typing import List, Optional
 import xarray as xr
+
+
+def check_nyquist_sampling(
+    laser_diameter_um: float, step_size_um: float, oversampling_factor: float = 2.0
+) -> bool:
+    """Check whether `step_size_um` satisfies the Nyquist-Shannon sampling
+    criterion relative to `laser_diameter_um` (the beam's resolution
+    element).
+
+    Nyquist requires at least `oversampling_factor` (2, by default) samples
+    per resolution element to avoid spatial aliasing:
+    ``step_size_um <= laser_diameter_um / oversampling_factor``. Steps
+    coarser than this undersample the beam, which both degrades the raw
+    image and starves the deconvolution of the overlap it relies on to
+    recover resolution.
+
+    Does not raise — prints a warning and returns False when undersampled,
+    otherwise returns True.
+    """
+    nyquist_step_um = laser_diameter_um / oversampling_factor
+    is_valid = step_size_um <= nyquist_step_um
+
+    if not is_valid:
+        print(
+            f"Warning: step_size_um ({step_size_um:.4g} um) exceeds the Nyquist "
+            f"limit ({nyquist_step_um:.4g} um = laser_diameter_um / {oversampling_factor:g}) "
+            f"for laser_diameter_um={laser_diameter_um:.4g} um. Sampling is coarser "
+            f"than the beam's resolution element, risking spatial aliasing and a "
+            f"deconvolution with little real overlap to work from. Consider reducing "
+            f"step_size_um (or accepting the lower effective resolution)."
+        )
+
+    return is_valid
 
 
 @dataclass
 class MaldiPSFGenerator:
     """
     Generates Point Spread Functions (PSF) for MALDI Imaging.
-    Supports modular step-by-step generation.
+
+    Simulates the laser beam's spatial profile, the dose accumulated from
+    overlapping past shots, and the resulting signal decay, producing both
+    a fine-resolution simulation grid and a coarse PSF kernel suitable for
+    deconvolution. See the module docstring for the underlying concepts
+    (dose map, decay map, pass map, spatial profile, final signal).
+
+    Construction runs the full pipeline immediately: parameters are
+    validated (raising `ValueError` on failure), a Nyquist sampling check
+    prints a warning (does not raise) if `step_size_um` undersamples the
+    beam, and `compute_psf()` populates all derived attributes. There is
+    no separate `.fit()` / `.run()` step — the instance is ready to use as
+    soon as `__init__` returns.
+
+    Args:
+        laser_diameter_um: Laser spot diameter, in µm. Used as the beam's
+            1/e^2 diameter (`self.w0 = laser_diameter_um / 2` is the 1/e^2
+            radius) for both the Gaussian (`beam_profile`) and binary
+            (`geometric`) spatial profiles. Must be > 0.
+        step_size_um: Distance between consecutive laser shots, in µm
+            (the scan step / pixel pitch). Must be > 0. Checked against
+            `laser_diameter_um` via the Nyquist criterion at construction
+            time (warns, does not raise, if the step is too coarse).
+        kernel_size: Size, in pixels, of the square coarse output kernel
+            (`pass_map`, `spatial_kernel`, `final_signal_kernel`). Must be
+            a positive odd integer (e.g. 3, 5, 7) so the kernel has a
+            well-defined center pixel. Default `3`.
+        sim_res_um: Resolution, in µm, of the fine simulation grid used
+            internally to compute the dose map and spatial profile before
+            integrating down to the coarse kernel. Smaller values are more
+            accurate but more expensive. Default `0.05`.
+        scan_direction: Laser raster direction: `"tl_br"` (top-left to
+            bottom-right) or `"bl_tr"` (bottom-left to top-right).
+            Determines which neighboring shots count as "past" shots (and
+            so contribute dose/decay) when computing the dose and pass
+            maps. Default `"tl_br"`.
+        method: Spatial profile model: `"beam_profile"` (continuous
+            Gaussian intensity, integer-free) or `"geometric"` (binary
+            circular footprint). Affects `spatial_profile`, `dose_map`,
+            and `final_signal`; `pass_map` is always a discrete geometric
+            count regardless of this setting. Default `"beam_profile"`.
+        decay_model: How `dose_map` is converted into `decay_map` values
+            in [0, 1]. `"exponential"` fits `a * exp(-b * x) + c` to
+            `decay_factors` via `scipy.optimize.curve_fit`, falling back
+            to linear interpolation if the fit fails or fewer than 3
+            points are given; `"interpolation"` always uses linear
+            interpolation directly. Default `"exponential"`.
+        decay_factors: Measured normalized signal intensity per number of
+            overlapping passes, e.g. `[1.0, 0.8, 0.65]` for 1, 2, 3
+            overlapping shots (index `i` corresponds to `i + 1` passes).
+            Must be non-empty. Default `[1.0]` (no decay).
+        decay_errors: Optional per-point measurement uncertainty (sigma),
+            same length as `decay_factors`. When provided, the exponential
+            fit uses sigma-weighted least squares (`absolute_sigma=True`)
+            for a chi-squared-optimal fit; non-positive values are ignored
+            with a warning instead of raising. Default `None`.
+
+    Note:
+        The remaining dataclass fields (`xv`, `yv`, `dose_map`,
+        `decay_map`, `decay_fit_results`, `spatial_profile`,
+        `final_signal`, `spatial_kernel`, `pass_map`,
+        `final_signal_kernel`, `fov_span`, `padding`, `meshgrid_span`) are
+        computed outputs populated by `compute_psf()` during
+        `__post_init__`. They appear as constructor parameters only
+        because they are dataclass fields (needed so `compute_psf(**kwargs)`
+        can override them programmatically) — they should not normally be
+        passed in when creating an instance.
     """
 
     laser_diameter_um: float
@@ -77,22 +212,108 @@ class MaldiPSFGenerator:
     fov_span: Optional[float] = None
     padding: Optional[float] = None
     meshgrid_span: Optional[float] = None
-    def __post_init__(self):
-        self.w0 = self.laser_diameter_um / 2.0  # 1/e^2 radius
+
+    # Names of the fields above the "Internal storage and computation
+    # results" comment -- i.e. the actual constructor inputs, as opposed to
+    # values `compute_psf()` derives from them. Deliberately a plain class
+    # attribute (no type annotation) rather than a dataclass field: an
+    # annotated one would become a constructor parameter, which isn't what
+    # we want for a list of field *names*. Drives `to_params_dict`/`save`.
+    _PARAM_FIELDS = (
+        "laser_diameter_um",
+        "step_size_um",
+        "kernel_size",
+        "sim_res_um",
+        "scan_direction",
+        "method",
+        "decay_model",
+        "decay_factors",
+        "decay_errors",
+    )
+
+    def __post_init__(self) -> None:
+        self._validate()
+        self.check_nyquist_sampling()
         self.compute_psf()
 
+    @property
+    def w0(self) -> float:
+        """1/e^2 beam radius (`laser_diameter_um / 2`)."""
+        # Property rather than an attribute set once here, so it can't go
+        # stale if laser_diameter_um is later overridden via
+        # compute_psf(**kwargs).
+        return self.laser_diameter_um / 2.0
+
+    def check_nyquist_sampling(self, oversampling_factor: float = 2.0) -> bool:
+        """Warn (without raising) if `step_size_um` undersamples
+        `laser_diameter_um` per the Nyquist criterion. See the module-level
+        `check_nyquist_sampling` for details; this just forwards this
+        instance's parameters to it."""
+        return check_nyquist_sampling(
+            self.laser_diameter_um, self.step_size_um, oversampling_factor
+        )
+
+    def _validate(self) -> None:
+        """Raise ValueError on invalid construction parameters."""
+        if self.laser_diameter_um <= 0:
+            raise ValueError(
+                f"laser_diameter_um must be > 0, got {self.laser_diameter_um}."
+            )
+        if self.step_size_um <= 0:
+            raise ValueError(
+                f"step_size_um must be > 0, got {self.step_size_um}."
+            )
+        if not float(self.kernel_size).is_integer():
+            raise ValueError(
+                f"kernel_size must be a whole number, got {self.kernel_size}."
+            )
+        if self.kernel_size <= 0:
+            raise ValueError(
+                f"kernel_size must be a positive integer, got {self.kernel_size}."
+            )
+        if self.kernel_size % 2 == 0:
+            raise ValueError(
+                f"kernel_size should be odd (e.g. 3, 5), got {self.kernel_size}."
+            )
+        if self.method not in ("beam_profile", "geometric"):
+            raise ValueError(
+                f"method must be 'beam_profile' or 'geometric', got {self.method!r}."
+            )
+        if self.decay_model not in ("exponential", "interpolation"):
+            raise ValueError(
+                f"decay_model must be 'exponential' or 'interpolation', got {self.decay_model!r}."
+            )
+        if self.scan_direction not in ("tl_br", "bl_tr"):
+            raise ValueError(
+                f"scan_direction must be 'tl_br' or 'bl_tr', got {self.scan_direction!r}."
+            )
+        if not self.decay_factors:
+            raise ValueError("decay_factors must be non-empty.")
+        if self.decay_errors is not None and len(self.decay_errors) != len(
+            self.decay_factors
+        ):
+            raise ValueError(
+                f"decay_errors length ({len(self.decay_errors)}) must match "
+                f"decay_factors length ({len(self.decay_factors)})."
+            )
+
     @staticmethod
-    def _exponential_decay(x, a, b, c):
+    def _exponential_decay(
+        x: np.ndarray, a: float, b: float, c: float
+    ) -> np.ndarray:
         """Exponential decay function: y = a * exp(- b * x) + c"""
         return a * np.exp(-b * x) + c
 
-    def _gaussian_profile(self, r2):
+    def _gaussian_profile(self, r2: np.ndarray) -> np.ndarray:
         """Returns Gaussian intensity for squared radius r2."""
-        # I(r) = exp(-2 * r^2 / w0^2)
-        return np.exp(-2 * r2 / (self.w0**2)).astype(float)
+        # I(r) = exp(-2 * r^2 / w0^2). np.exp of a float64 input is
+        # already float64 -- no .astype(float) needed (this is the
+        # hottest line in the whole pipeline, called ~100+ times per
+        # instance over the full fine grid, so the redundant full-array
+        # copy wasn't free).
+        return np.exp(-2 * r2 / (self.w0**2))
 
-
-    def _circular_profile(self, r2):
+    def _circular_profile(self, r2: np.ndarray) -> np.ndarray:
         """Returns binary circular profile for squared radius r2."""
         # Binary: 1.0 inside radius, 0.0 outside
         return (r2 <= self.w0**2).astype(float)
@@ -298,32 +519,35 @@ class MaldiPSFGenerator:
         """
         Integrates the fine-grid simulation into the coarse kernel pixels.
         Updates self.spatial_kernel and self.final_signal_kernel.
+
+        Kernel pixel (r, c) covers the half-open square
+        `[(r-kc)*step - step/2, (r-kc)*step + step/2)` x (same for c/x) --
+        a regular partition of the plane. Rather than rebuilding a
+        full-fine-grid boolean mask per kernel pixel (O(kernel_size^2 x
+        grid_size), the original approach here), every fine-grid point's
+        (row, col) bin is computed once via `floor(v/step + 0.5)` -- the
+        closed-form bin index for that same half-open convention -- and
+        `np.bincount` scatter-adds directly into the kernel (O(grid_size)).
+        Numerically equivalent to the previous per-cell-mask approach
+        (verified to agree to float64 noise, ~1e-15, both on step/sim_res
+        grids that align exactly on bin boundaries and ones that don't);
+        summation order differs, so results aren't bit-identical.
         """
         k_size = self.kernel_size
-        spatial_kernel = np.zeros((k_size, k_size))
-        final_signal_kernel = np.zeros((k_size, k_size))
-
         kc = k_size // 2
         step = self.step_size_um
 
-        for r in range(k_size):
-            for c in range(k_size):
-                rel_r = r - kc
-                rel_c = c - kc
+        ix = np.floor(self.xv / step + 0.5).astype(np.int64) + kc
+        iy = np.floor(self.yv / step + 0.5).astype(np.int64) + kc
+        in_bounds = (ix >= 0) & (ix < k_size) & (iy >= 0) & (iy < k_size)
 
-                py = rel_r * step
-                px = rel_c * step
-
-                y_min, y_max = py - step / 2, py + step / 2
-                x_min, x_max = px - step / 2, px + step / 2
-
-                mask = (self.xv >= x_min) & (self.xv < x_max) & (self.yv >= y_min) & (self.yv < y_max)
-
-                if not np.any(mask):
-                    continue
-
-                spatial_kernel[r, c] = np.sum(self.spatial_profile[mask])
-                final_signal_kernel[r, c] = np.sum(self.final_signal[mask])
+        flat_idx = iy[in_bounds] * k_size + ix[in_bounds]
+        spatial_kernel = np.bincount(
+            flat_idx, weights=self.spatial_profile[in_bounds], minlength=k_size * k_size
+        ).reshape(k_size, k_size)
+        final_signal_kernel = np.bincount(
+            flat_idx, weights=self.final_signal[in_bounds], minlength=k_size * k_size
+        ).reshape(k_size, k_size)
 
         # Normalize
         if np.sum(final_signal_kernel) > 0:
@@ -446,7 +670,52 @@ class MaldiPSFGenerator:
 
         return ds
 
-    def estimate_kernel_size(self, max_kernel=15):
+    def to_params_dict(self) -> dict:
+        """Returns just the constructor inputs (see `_PARAM_FIELDS`) needed
+        to reconstruct this instance via `MaldiPSFGenerator(**params)`.
+        Excludes every computed attribute (grids, kernels, fit results,
+        ...) -- `__post_init__` regenerates those deterministically from
+        these inputs alone, so persisting them separately would be
+        redundant."""
+        return {name: getattr(self, name) for name in self._PARAM_FIELDS}
+
+    def save(self, path: Union[str, Path]) -> None:
+        """Persist this instance as a small JSON (typically <1KB) instead
+        of dumping the full computed simulation (`to_xarray()`'s fine
+        grids run tens of MB at typical `sim_res_um`) to netCDF/HDF5. See
+        the module docstring's "Persistence" section.
+
+        Writes the constructor params (`to_params_dict()`) plus the
+        already-small coarse kernels/fit results, so downstream code that
+        only needs the PSF kernel can read it back via `load_psf_kernels`
+        without reconstructing (and re-simulating) a full instance.
+        Reload with `MaldiPSFGenerator.load` when the full instance
+        (fine grids included) is actually needed again.
+        """
+        payload = {
+            "params": self.to_params_dict(),
+            "kernels": {
+                "spatial_kernel": self.spatial_kernel.tolist(),
+                "pass_map": self.pass_map.tolist(),
+                "final_signal_kernel": self.final_signal_kernel.tolist(),
+                "decay_fit_results": self.decay_fit_results,
+            },
+        }
+        Path(path).write_text(json.dumps(payload, indent=2))
+
+    @classmethod
+    def load(cls, path: Union[str, Path]) -> "MaldiPSFGenerator":
+        """Reconstruct a `MaldiPSFGenerator` by re-running its full
+        pipeline from constructor params previously written by `save`.
+        Deterministic, so the result -- fine grids, dose/decay maps,
+        kernels, fit results -- exactly reproduces the saved instance;
+        this re-simulates rather than reading cached arrays, so prefer
+        `load_psf_kernels` if only the PSF kernel itself is needed.
+        """
+        payload = json.loads(Path(path).read_text())
+        return cls(**payload["params"])
+
+    def estimate_kernel_size(self, max_kernel: int = 15) -> None:
         """
         Calculates the percentage of Gaussian beam energy contained within different kernel sizes.
         Prints a report to stdout.
@@ -529,3 +798,34 @@ class MaldiPSFGenerator:
 
         # 7. Integration
         self._integrate_kernel()
+
+
+def load_psf_params(path: Union[str, Path]) -> dict:
+    """Read just the constructor params (`to_params_dict()`) from a file
+    written by `MaldiPSFGenerator.save`, without touching the cached
+    kernels or reconstructing an instance. Useful for cheaply recovering
+    scalar metadata (e.g. `step_size_um`) that a PSF was generated with.
+    """
+    payload = json.loads(Path(path).read_text())
+    return payload["params"]
+
+
+def load_psf_kernels(path: Union[str, Path]) -> dict:
+    """Read just the small cached kernels from a file written by
+    `MaldiPSFGenerator.save`, without reconstructing (and re-simulating)
+    the full instance. Use this when only the PSF kernel is needed, e.g.
+    for deconvolution or metrics -- see `MaldiPSFGenerator.load` when the
+    fine-grid simulation itself is actually needed.
+
+    Returns a dict with keys `spatial_kernel`, `pass_map`,
+    `final_signal_kernel` (each `kernel_size` x `kernel_size` ndarrays)
+    and `decay_fit_results` (dict).
+    """
+    payload = json.loads(Path(path).read_text())
+    kernels = payload["kernels"]
+    return {
+        "spatial_kernel": np.array(kernels["spatial_kernel"]),
+        "pass_map": np.array(kernels["pass_map"]),
+        "final_signal_kernel": np.array(kernels["final_signal_kernel"]),
+        "decay_fit_results": kernels["decay_fit_results"],
+    }

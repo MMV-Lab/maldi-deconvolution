@@ -7,141 +7,17 @@ with app.setup:
     import marimo as mo
     import numpy as np
     from pathlib import Path
-    import math
-    from pyimzml.ImzMLParser import ImzMLParser
     import hvplot
-    import xarray as xr
     import hvplot.xarray
-    import warnings
-    import polars as pl
     import datetime
 
+    import sys
 
-@app.function
-def read_imzml_to_xarray(
-    filepath: Path,
-    m_z_values: list,
-    tolerance: float = 0.005,
-) -> xr.DataArray:
-    """Read an imzML file and return an xarray DataArray of ion images.
+    _root_dir = Path(__file__).resolve().parent.parent
+    if str(_root_dir) not in sys.path:
+        sys.path.append(str(_root_dir))
 
-    Parameters
-    ----------
-    filepath:
-        Path to the .imzml file.
-    m_z_values:
-        List of target m/z values to extract.
-    tolerance:
-        Half-window (in Da) around each target m/z for intensity summation.
-
-    Returns
-    -------
-    xr.DataArray
-        Shape ``(n_mz, n_y, n_x)``, with x/y coordinates in μm and m/z as the
-        first dimension.
-    """
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        imzml = ImzMLParser(filepath)
-
-    # --- pixel size ---
-    pixel_size_x = imzml.imzmldict.get("pixel size x")
-    pixel_size_y = imzml.imzmldict.get("pixel size y")
-    if pixel_size_x is None or pixel_size_y is None:
-        # Try to compute from max dimension and pixel count
-        max_dim_x = imzml.imzmldict.get("max dimension x")
-        max_dim_y = imzml.imzmldict.get("max dimension y")
-        max_pix_x = imzml.imzmldict.get("max count of pixels x")
-        max_pix_y = imzml.imzmldict.get("max count of pixels y")
-
-        if not all([max_dim_x, max_dim_y, max_pix_x, max_pix_y]):
-            raise ValueError(
-                f"Cannot determine pixel size. Missing metadata: "
-                f"max_dim_x={max_dim_x}, max_dim_y={max_dim_y}, "
-                f"max_pix_x={max_pix_x}, max_pix_y={max_pix_y}"
-            )
-        pixel_size_x = max_dim_x / max_pix_x
-        pixel_size_y = max_dim_y / max_pix_y
-    pixel_size_x = float(pixel_size_x)
-    pixel_size_y = float(pixel_size_y)
-
-    # --- spatial extent (imzML coordinates are 1-based) ---
-    max_x = max(c[0] for c in imzml.coordinates)
-    max_y = max(c[1] for c in imzml.coordinates)
-
-    # --- extent m_z ---
-
-    min_mz_global = float("inf")
-    max_mz_global = float("-inf")
-
-    # Scan all spectra to determine the full ranges
-    # (This iterates over all pixels, so it might take a few seconds)
-    for i in range(len(imzml.coordinates)):
-        _mzs, _ = imzml.getspectrum(i)
-        if len(_mzs) > 0:
-            # m/z arrays are typically sorted
-            local_min = _mzs[0]
-            local_max = _mzs[-1]
-
-            if local_min < min_mz_global:
-                min_mz_global = local_min
-            if local_max > max_mz_global:
-                max_mz_global = local_max
-
-    min_mz_global = math.floor(min_mz_global)
-    max_mz_global = math.ceil(max_mz_global)
-    # print(f"Global Min m/z: {min_mz_global}")
-    # print(f"Global Max m/z: {max_mz_global}")
-
-    # --- validate m/z values are within range ---
-    out_of_range = [
-        mz for mz in m_z_values if mz < min_mz_global or mz > max_mz_global
-    ]
-    if out_of_range:
-        raise ValueError(
-            f"The following m/z values are outside the data range [{min_mz_global}, {max_mz_global}]: {out_of_range}"
-        )
-
-    # --- build ion-image stack ---
-    targets = np.array(m_z_values)
-    lower_bounds = targets - tolerance
-    upper_bounds = targets + tolerance
-    n_targets = len(targets)
-
-    ion_image_stack = np.zeros((n_targets, max_y, max_x), dtype=np.float32)
-
-    for idx, (x, y, _z) in enumerate(imzml.coordinates):
-        x_pos, y_pos = x - 1, y - 1
-        mzs, ints = imzml.getspectrum(idx)
-        idx_l = np.searchsorted(mzs, lower_bounds, side="left")
-        idx_r = np.searchsorted(mzs, upper_bounds, side="right")
-        for t in range(n_targets):
-            l, r = idx_l[t], idx_r[t]
-            if r > l:
-                ion_image_stack[t, y_pos, x_pos] = np.sum(ints[l:r])
-
-    # --- wrap in xarray ---
-    x_coords_um = (np.arange(max_x) + 1) * pixel_size_x
-    y_coords_um = (np.arange(max_y) + 1) * pixel_size_y
-
-    da = xr.DataArray(
-        ion_image_stack,
-        coords={"m_z": m_z_values, "y": y_coords_um, "x": x_coords_um},
-        dims=("m_z", "y", "x"),
-        attrs={
-            "tolerance": tolerance,
-            "pixel_size_x": pixel_size_x,
-            "pixel_size_y": pixel_size_y,
-            "original_file_name": Path(filepath).name,
-        },
-        name="ion_intensity",
-    )
-    da.x.attrs["units"] = "μm"
-    da.y.attrs["units"] = "μm"
-    da.m_z.attrs["long_name"] = "m/z"
-    da.attrs["long_name"] = "Ion Intensity"
-    da.attrs["units"] = "a.u."
-    return da
+    from src.imzml_io import read_imzml_to_xarray, parse_mz_csv, save_dataarray
 
 
 @app.cell
@@ -289,12 +165,7 @@ def _(filepath, widget_csv_upload, widget_use_folder_csv):
 
             if len(_csv_candidates) == 1:
                 try:
-                    _df = pl.read_csv(
-                        source=_csv_candidates[0],
-                        has_header=False,
-                        new_columns=["m_z"],
-                    )
-                    mz_list_from_csv = _df["m_z"].cast(pl.Float64).to_list()
+                    mz_list_from_csv = parse_mz_csv(_csv_candidates[0])
                     mz_csv_source = _csv_candidates[0].name
                     mo.output.append(
                         mo.md(
@@ -324,12 +195,7 @@ def _(filepath, widget_csv_upload, widget_use_folder_csv):
 
     if len(widget_csv_upload.value) == 1:
         try:
-            _df = pl.read_csv(
-                source=widget_csv_upload.value[0].contents,
-                has_header=False,
-                new_columns=["m_z"],
-            )
-            mz_list_from_csv = _df["m_z"].cast(pl.Float64).to_list()
+            mz_list_from_csv = parse_mz_csv(widget_csv_upload.value[0].contents)
             mz_csv_source = widget_csv_upload.value[0].name
 
         except Exception as e:
@@ -358,10 +224,7 @@ def _(
         if "tolerance" in _args:
             tolerance = float(_args["tolerance"])
         if "mz-csv" in _args:
-            _df = pl.read_csv(
-                _args["mz-csv"], has_header=False, new_columns=["m_z"]
-            )
-            m_z_values = _df["m_z"].cast(pl.Float64).to_list()
+            m_z_values = parse_mz_csv(_args["mz-csv"])
         elif "mz" in _args:
             m_z_values = [float(_args["mz"])]
         else:
@@ -484,7 +347,7 @@ def _(export_button, filepath, ion_image_xr, is_script_mode):
     with mo.status.spinner(
         title="Saving...", subtitle="This should take 1-2 minutes"
     ) as _spinner:
-        ion_image_xr.to_netcdf(out_dir / f"{filepath.name}_original.h5")
+        save_dataarray(ion_image_xr, out_dir / f"{filepath.name}_original.h5")
 
     mo.md(f"""Saved original `{filepath.name}_original.h5` to:
 

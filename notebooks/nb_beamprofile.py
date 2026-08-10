@@ -5,20 +5,27 @@ app = marimo.App(width="columns")
 
 with app.setup:
     import marimo as mo
-    import math
     import numpy as np
-    import hvplot
-    import xarray as xr
-
-    import polars as pl
 
     import holoviews as hv
     from holoviews import opts
 
-    hv.extension("bokeh")
+    import sys
+    from pathlib import Path as _Path
 
-    from astropy.modeling import models, fitting
+    _root_dir = _Path(__file__).resolve().parent.parent
+    if str(_root_dir) not in sys.path:
+        sys.path.append(str(_root_dir))
 
+    from src.beam_profile import (
+        load_cma_images,
+        crop_around_peak,
+        fit_gaussian2d,
+        beam_diameter_stats,
+    )
+    from src.plotting import set_hv_backend
+
+    set_hv_backend("bokeh", fig_format=None)
 
     # import hvplot.xarray
     # import hvplot.polars
@@ -62,41 +69,14 @@ def _():
 
 
 @app.cell
-def _(path_list):
-    # beware of trailing comma
-    images = [
-        pl.read_csv(p, has_header=False).to_numpy()[:, :-1].astype(float)
-        for p in path_list
-    ]
-    return (images,)
+def _(path_list, x_pixel_size, y_pixel_size):
+    xy_profiles_full = load_cma_images(path_list, x_pixel_size, y_pixel_size)
+    return (xy_profiles_full,)
 
 
 @app.cell
-def _(images, x_pixel_size, y_pixel_size):
-    _stacked_data = np.stack(images)
-
-    xy_profiles = xr.DataArray(
-        _stacked_data,
-        dims=["sample", "y", "x"],
-        coords={
-            "sample": np.arange(_stacked_data.shape[0]),
-            "y": np.arange(_stacked_data.shape[1]) * y_pixel_size,
-            "x": np.arange(_stacked_data.shape[2]) * x_pixel_size,
-        },
-        name="intensity",
-        attrs={"units": "um"},
-    )
-
-    max_pos = xy_profiles.mean(dim="sample").argmax(dim=["y", "x"])
-
-    N = 20
-    y_mid = int(max_pos["y"])
-    x_mid = int(max_pos["x"])
-
-    xy_profiles = xy_profiles.isel(
-        y=slice(y_mid - N // 2, y_mid + N // 2),
-        x=slice(x_mid - N // 2, x_mid + N // 2),
-    )
+def _(xy_profiles_full):
+    xy_profiles = crop_around_peak(xy_profiles_full, window=20)
     return (xy_profiles,)
 
 
@@ -108,9 +88,7 @@ def _(xy_profiles):
 
     avg_img = xy_profiles.mean(dim="sample")
     std_img = xy_profiles.std(dim="sample")
-
-    fitter = fitting.LevMarLSQFitter()
-    return X, Y, avg_img, fitter, std_img, x_coords, y_coords
+    return X, Y, avg_img, std_img, x_coords, y_coords
 
 
 @app.cell
@@ -129,24 +107,8 @@ def _():
 
 
 @app.cell(column=1)
-def _(X, Y, avg_img, fitter, x_coords, y_coords):
-    _z_data = avg_img.values
-
-
-    _max_idx = np.unravel_index(np.argmax(_z_data), _z_data.shape)
-    _y_peak_guess = y_coords[_max_idx[0]]
-    _x_peak_guess = x_coords[_max_idx[1]]
-
-    _model_init = models.Gaussian2D(
-        amplitude=_z_data.max(),
-        x_mean=_x_peak_guess,
-        y_mean=_y_peak_guess,
-        x_stddev=1.0,
-        y_stddev=1.0,
-    )
-
-    global_best_fit = fitter(_model_init, X, Y, _z_data)
-
+def _(avg_img, x_coords, y_coords):
+    global_best_fit = fit_gaussian2d(x_coords, y_coords, avg_img.values)
 
     # stds = std_img.values
     # positive_stds = stds[stds > 0]
@@ -165,7 +127,7 @@ def _(X, Y, avg_img, fitter, x_coords, y_coords):
 
 @app.cell
 def _(X, Y, avg_img, global_best_fit, std_img):
-    hv.extension("matplotlib")
+    set_hv_backend("matplotlib", fig_format=None)
 
     # Define the dimensions with units
     x_dim = hv.Dimension("x", label=r"x ($\mu$m)")
@@ -269,7 +231,7 @@ def _(global_best_fit):
 
 @app.cell
 def _(X, Y, avg_img, global_best_fit, std_img):
-    hv.extension("matplotlib")
+    set_hv_backend("matplotlib", fig_format=None)
 
     # Define the dimensions with units
     _x_dim = hv.Dimension("x", label=r"x ($\mu$m)")
@@ -353,25 +315,13 @@ def _(X, Y, avg_img, global_best_fit, std_img):
 
 
 @app.cell(column=2)
-def _(X, Y, fitter, x_coords, xy_profiles, y_coords):
+def _(x_coords, xy_profiles, y_coords):
     fit_results = []
 
     for _sample_val in xy_profiles.sample.values:
-        _z_data = xy_profiles.sel(sample=_sample_val).values
-
-        _max_idx = np.unravel_index(np.argmax(_z_data), _z_data.shape)
-        _y_peak_guess = y_coords[_max_idx[0]]
-        _x_peak_guess = x_coords[_max_idx[1]]
-
-        _model_init = models.Gaussian2D(
-            amplitude=_z_data.max(),
-            x_mean=_x_peak_guess,
-            y_mean=_y_peak_guess,
-            x_stddev=1.0,
-            y_stddev=1.0,
+        _fit = fit_gaussian2d(
+            x_coords, y_coords, xy_profiles.sel(sample=_sample_val).values
         )
-
-        _fit = fitter(_model_init, X, Y, _z_data)
 
         fit_results.append(
             {
@@ -384,7 +334,6 @@ def _(X, Y, fitter, x_coords, xy_profiles, y_coords):
             }
         )
 
-
     # mean_params = df_sample_fits.select(pl.exclude("sample").mean()).row(0, named=True)
     # sample_best_fit = models.Gaussian2D(**mean_params)
     return (fit_results,)
@@ -392,25 +341,19 @@ def _(X, Y, fitter, x_coords, xy_profiles, y_coords):
 
 @app.cell
 def _(fit_results):
-    df_sample_fits = pl.DataFrame(fit_results)
-
-    df_sample_fits = (
-        pl.DataFrame(fit_results)
-        .with_columns(sigma_eff=(pl.col("x_stddev") * pl.col("y_stddev")).sqrt())
-        .with_columns(beam_diameter_1e2=pl.col("sigma_eff") * 4)
-    )
+    df_sample_fits, beam_diameter_summary = beam_diameter_stats(fit_results)
 
     df_sample_fits
-    return (df_sample_fits,)
+    return (df_sample_fits, beam_diameter_summary)
 
 
 @app.cell
-def _(df_sample_fits):
+def _(beam_diameter_summary):
     print(
-        f"Value ± std = {df_sample_fits['beam_diameter_1e2'].mean():.04f} ± {df_sample_fits['beam_diameter_1e2'].std():.04f} um "
+        f"Value ± std = {beam_diameter_summary['mean']:.04f} ± {beam_diameter_summary['std']:.04f} um "
     )
     print(
-        f"Value ± sem = {df_sample_fits['beam_diameter_1e2'].mean():.04f} ± {df_sample_fits['beam_diameter_1e2'].std() / math.sqrt(df_sample_fits['beam_diameter_1e2'].count()):.04f} um "
+        f"Value ± sem = {beam_diameter_summary['mean']:.04f} ± {beam_diameter_summary['sem']:.04f} um "
     )
     return
 

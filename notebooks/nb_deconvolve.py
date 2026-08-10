@@ -6,20 +6,13 @@ app = marimo.App(width="medium")
 with app.setup:
     import marimo as mo
 
-    import polars as pl
     import hvplot
     import holoviews as hv
     import hvplot.xarray
-    import numpy as np
-    import xarray as xr
 
     import datetime
-    import json
 
-    from skimage.restoration import richardson_lucy
     from pathlib import Path
-    from typing import Union, Tuple, Optional
-
 
     import sys
 
@@ -28,230 +21,12 @@ with app.setup:
         sys.path.append(str(_root_dir))
 
     from src.psf_generator import MaldiPSFGenerator
-
-
-@app.function
-def load_decay_profile(
-    source_input: Union[object, str, Path],
-) -> Tuple[Optional[pl.DataFrame], Optional[str]]:
-    """
-    Parses a CSV file using Polars.
-    Accepts 1 column (intensity) or 2 columns (pass, intensity).
-    Handles files with or without headers.
-
-    Args:
-        source_input: Can be a marimo file object (from mo.ui.file()[0]),
-                      a string path, or a pathlib.Path object.
-
-    Returns:
-        tuple: (pl.DataFrame | None, str | None) -> (Data, Error Message)
-    """
-    if not source_input:
-        return None, "No file provided."
-
-    # 1. NORMALIZE INPUT SOURCE
-    # If it has .contents, it's a Marimo file object (bytes).
-    # Otherwise, assume it's a Path/str.
-    if hasattr(source_input, "contents"):
-        source = source_input.contents  # Bytes
-    elif isinstance(source_input, (str, Path)):
-        source = source_input  # Path
-    else:
-        return (
-            None,
-            "Invalid input type. Must be a Marimo file object or a Path.",
-        )
-
-    try:
-        # 2. READ STRATEGY: PEEK AT DATA
-        # Read a few rows assuming no header to inspect the first row safely
-        # Polars accepts both bytes and paths here.
-        try:
-            df_raw = pl.read_csv(source, has_header=False, n_rows=5)
-        except Exception:
-            # Captures empty files or non-CSV formats immediately
-            return (
-                None,
-                "File cannot be read. It might be empty or not a valid CSV.",
-            )
-
-        if df_raw.is_empty():
-            return None, "File is empty."
-
-        # 3. DETECT HEADER
-        # Check if the first row contains non-numeric strings
-        first_row_vals = df_raw.row(0)
-        has_header = False
-
-        for val in first_row_vals:
-            try:
-                float(val)
-            except (ValueError, TypeError):
-                has_header = True
-                break
-
-        # 4. RELOAD WITH CORRECT SETTINGS
-        # If we passed bytes, we can re-read the bytes variable.
-        # If we passed a path, Polars just re-opens the file.
-        df = pl.read_csv(source, has_header=has_header)
-
-        # 5. STANDARDIZE COLUMNS
-        width = df.width
-
-        # CASE A: 1 Column (Intensity only)
-        if width == 1:
-            df = df.rename({df.columns[0]: "intensity"})
-            # Generate a pass index (0, 1, 2...)
-            df = df.with_columns(
-                pl.int_range(0, pl.len(), dtype=pl.Int64).alias("pass_idx")
-            )
-
-        # CASE B: 2 Columns (Pass, Intensity)
-        elif width == 2:
-            # Assume col 0 is Pass, col 1 is Intensity
-            df = df.select(
-                [
-                    pl.col(df.columns[0]).alias("pass_idx"),
-                    pl.col(df.columns[1]).alias("intensity"),
-                ]
-            )
-
-        # CASE C: 3+ Columns (Pass, Intensity, Error)
-        elif width == 3:
-            # Assume col 0 is Pass, col 1 is Intensity, col 2 is Error/Uncertainty
-            df = df.select(
-                [
-                    pl.col(df.columns[0]).alias("pass_idx"),
-                    pl.col(df.columns[1]).alias("intensity"),
-                    pl.col(df.columns[2]).alias("error"),
-                ]
-            )
-
-        else:
-            return None, "CSV structure invalid."
-
-        # 6. STRICT TYPE CASTING & CLEANUP
-        # Drop nulls only on required columns; error column may have partial data
-        df = df.drop_nulls(subset=["pass_idx", "intensity"])
-
-        cast_exprs = [
-            pl.col("pass_idx").cast(pl.Int64),
-            pl.col("intensity").cast(pl.Float64),
-        ]
-        if "error" in df.columns:
-            cast_exprs.append(pl.col("error").cast(pl.Float64))
-
-        df = df.with_columns(cast_exprs)
-
-        # Ensure pass_idx is sorted (optional, but usually desired for decay profiles)
-        df = df.sort("pass_idx")
-
-        # Reorder columns
-        col_order = ["pass_idx", "intensity"]
-        if "error" in df.columns:
-            col_order.append("error")
-        df = df.select(col_order)
-
-        # Normalization logic depends on number of columns
-        if "error" not in df.columns:
-            # 1-2 column input: normalize to max
-            max_intensity = df["intensity"].max()
-
-            # Check if max is zero to avoid division by zero
-            if max_intensity == 0:
-                return None, "Maximum intensity is 0; cannot normalize data."
-
-            # Normalize the intensity column
-            df = df.with_columns(
-                (pl.col("intensity") / max_intensity).alias("intensity")
-            )
-        else:
-            # 3-column input: assume already normalized
-            # Verify that the first intensity value is 1.0
-            first_intensity = df["intensity"][0]
-            tolerance = 1e-6
-            if abs(first_intensity - 1.0) > tolerance:
-                return (
-                    None,
-                    f"Validation Error: For 3-column input, intensity must be normalized with intensity[0]=1.0, got {first_intensity:.6f}.",
-                )
-
-        return df, None
-
-    except FileNotFoundError:
-        return None, f"File not found: {source}"
-    except Exception as e:
-        return None, f"Error processing file: {str(e)}"
-
-
-@app.function
-def validate_setup_params(values):
-    """
-    Validates the setup parameters form.
-    Args:
-        values (dict): A dictionary containing the current values of the inputs.
-    Returns:
-        str | None: An error message string if invalid, None if valid.
-    """
-    if not values:
-        return "Form has no values."
-
-    # 1. Validate Laser Diameter (Float > 0)
-    try:
-        laser = float(values["laser_diameter"])
-        if laser <= 0:
-            return "Laser Diameter must be greater than 0."
-    except ValueError:
-        return "Laser Diameter must be a valid number."
-
-    # 2. Validate Step Size (Float > 0)
-    try:
-        step = float(values["step_size"])
-        if step <= 0:
-            return "Step Size must be greater than 0."
-    except ValueError:
-        return "Scanning Step Size must be a valid number."
-
-    # 3. Validate Kernel Size (Int > 0, usually Odd)
-    try:
-        kernel = float(
-            values["kernel_size"]
-        )  # Allow float input but check if it's whole
-        if not kernel.is_integer():
-            return "Kernel Size must be a whole number (integer)."
-
-        kernel = int(kernel)
-
-        if kernel <= 0:
-            return "Kernel Size must be a positive integer."
-
-        # Optional: In image processing, kernels are usually odd numbers (3, 5, 7)
-        if kernel % 2 == 0:
-            return (
-                "Kernel Size usually needs to be an odd number (e.g., 3, 5)."
-            )
-
-    except ValueError:
-        return "Kernel Size must be a valid integer."
-
-    # 4. Validate CSV Upload
-    # mo.ui.file returns a list of files. Check if list is not empty.
-    if not values["decay_csv"]:
-        return "Please upload a Decay Profile CSV file."
-
-    # print(values["decay_csv"][0])
-    # print(type(values["decay_csv"][0]))
-
-    # We actually run the loader here.
-    # If it fails, the form shows the error.
-    # If it succeeds, we discard the DF (we'll load it again later) and return None.
-    _, csv_error = load_decay_profile(values["decay_csv"][0])
-
-    if csv_error:
-        return f"CSV Error: {csv_error}"
-
-    # If all checks pass
-    return None
+    from src.deconvolution import (
+        load_decay_profile,
+        deconvolute_dataset,
+    )
+    from src.imzml_io import load_dataarray, save_dataarray
+    from src.plotting import image_comparison_layout
 
 
 @app.cell
@@ -320,13 +95,21 @@ def _():
 def _(parameters_form):
     mo.stop(not parameters_form.value)
 
-    err = validate_setup_params(parameters_form.value)
-    if isinstance(err, str):
-        mo.output.append(mo.callout(str(err), kind="danger"))
-    else:
-        mo.output.append(mo.callout("Ok!", kind="success"))
+    # No separate pre-validation: build straight from the form and let
+    # MaldiPSFGenerator's own __post_init__ validation (and the CSV loader)
+    # raise/report whatever is wrong.
+    maldi_psf = None
+    maldi_psf_ds = None
+    try:
+        if not parameters_form.value["decay_csv"]:
+            raise ValueError("Please upload a Decay Profile CSV file.")
 
-        decay_df, _ = load_decay_profile(parameters_form.value["decay_csv"][0])
+        decay_df, csv_error = load_decay_profile(
+            parameters_form.value["decay_csv"][0]
+        )
+        if csv_error:
+            raise ValueError(f"CSV Error: {csv_error}")
+
         decay_errors = (
             decay_df["error"].to_list() if "error" in decay_df.columns else None
         )
@@ -342,7 +125,11 @@ def _(parameters_form):
             sim_res_um=0.01,
         )
         maldi_psf_ds = maldi_psf.to_xarray(fov_only=False)
-    return (maldi_psf_ds,)
+        mo.output.append(mo.callout("Ok!", kind="success"))
+    except (ValueError, TypeError) as e:
+        mo.output.append(mo.callout(str(e), kind="danger"))
+
+    return maldi_psf, maldi_psf_ds
 
 
 @app.cell
@@ -404,7 +191,11 @@ def _(maldi_psf_ds):
         )
         _plots.append(_tmp)
 
-    hv.Layout(_plots).cols(2).opts("Image", invert_yaxis=True).opts(
+    image_comparison_layout(
+        _plots,
+        cols=2,
+        opts_group="Image",
+        invert_yaxis=True,
         shared_axes=True,
         title="Simulation Maps (Fine Grid)",
     )
@@ -441,9 +232,13 @@ def _(maldi_psf_ds):
         _plots.append(_img * _lbl)
 
 
-    hv.Layout(_plots).cols(3).opts(
-        hv.opts.Overlay(invert_yaxis=True),
-        hv.opts.Layout(title="Output Kernels (Coarse Grid)", shared_axes=False),
+    image_comparison_layout(
+        _plots,
+        cols=3,
+        opts_group="Overlay",
+        invert_yaxis=True,
+        shared_axes=False,
+        title="Output Kernels (Coarse Grid)",
     )
     return
 
@@ -478,7 +273,7 @@ def _(parameters_form, widget_selected_dir):
             ).callout(kind="success")
         )
 
-        original_xr = xr.open_dataarray(input)
+        original_xr = load_dataarray(input)
         original_xr = original_xr.chunk({"m_z": 1, "y": -1, "x": -1})
         _sim_pixel_size = float(parameters_form.value["step_size"])
         _image_pixel_size = float(original_xr.attrs.get("pixel_size_x"))
@@ -496,69 +291,6 @@ def _(parameters_form, widget_selected_dir):
                 ).callout(kind="danger")
             )
     return input, original_xr
-
-
-@app.function
-def perform_batch_deconvolution(img_batch, kernel, num_iterations):
-    """
-    Operates on a chunk of data.
-    Input shape:  (batch, y, x)  <- corresponds to a chunk of m_z
-    Output shape: (batch, iteration, y, x)
-    """
-    # 1. Prepare output array
-    # Shape: (batch_size, num_iterations + 1, y, x)
-    batch_size, h, w = img_batch.shape
-    out_shape = (batch_size, num_iterations + 1, h, w)
-    output = np.zeros(out_shape, dtype=np.float32)
-
-    # 2. Iterate over the batch (the m_z chunk)
-    # We loop manually here, which is often faster/safer than np.vectorize
-    for i in range(batch_size):
-        img_2d = img_batch[i].astype(np.float32)
-
-        # Normalize
-        max_val = np.max(img_2d)
-        if max_val > 0:
-            img_2d /= max_val
-
-        # Store Iteration 0 (Original)
-        estimate = img_2d.copy()
-        output[i, 0, :, :] = estimate
-
-        # Deconvolution Loop
-        for iter_idx in range(1, num_iterations + 1):
-            estimate = richardson_lucy(estimate, kernel, num_iter=1)
-            output[i, iter_idx, :, :] = estimate.astype(np.float32)
-
-        # Rescale back to original intensity range
-        output[i] *= max_val
-
-    return output
-
-
-@app.function
-def deconvolute_dataset(input_xarray, kernel, num_iterations=10):
-
-    iter_coords = np.arange(num_iterations + 1)
-
-    deconvolved_da = xr.apply_ufunc(
-        perform_batch_deconvolution,
-        input_xarray,
-        kwargs={"kernel": kernel, "num_iterations": num_iterations},
-        input_core_dims=[["y", "x"]],
-        output_core_dims=[["iteration", "y", "x"]],
-        vectorize=False,
-        dask="parallelized",
-        output_dtypes=[np.float32],
-        dask_gufunc_kwargs={"output_sizes": {"iteration": len(iter_coords)}},
-    )
-
-    deconvolved_da = deconvolved_da.assign_coords(iteration=iter_coords)
-
-    deconvolved_da.name = "deconvolved_ion_intensity"
-    deconvolved_da.attrs["long_name"] = "Ion Intensity"
-    deconvolved_da.attrs["units"] = "a.u."
-    return deconvolved_da
 
 
 @app.cell
@@ -607,7 +339,7 @@ def _(result_xr):
 
 
 @app.cell
-def _(export_button, input, maldi_psf_ds, result_xr):
+def _(export_button, input, maldi_psf, result_xr):
     mo.stop(not export_button.value)
 
     with mo.status.spinner(
@@ -618,15 +350,17 @@ def _(export_button, input, maldi_psf_ds, result_xr):
         )
         out_dir.mkdir(exist_ok=True, parents=True)
 
-        maldi_psf_ds.attrs["decay_fit_results"] = json.dumps(
-            maldi_psf_ds.attrs["decay_fit_results"]
-        )
-        maldi_psf_ds.to_netcdf(
+        # Only the (tiny) constructor params + coarse kernels are persisted
+        # -- MaldiPSFGenerator.save (see its docstring) skips the fine-grid
+        # simulation arrays entirely since they're deterministically
+        # re-derivable from these params alone.
+        maldi_psf.save(
             out_dir
-            / f"{result_xr.attrs['original_file_name']}_simulation_data.h5",
+            / f"{result_xr.attrs['original_file_name']}_simulation_data.json",
         )
 
-        result_xr.to_netcdf(
+        save_dataarray(
+            result_xr,
             out_dir / f"{result_xr.attrs['original_file_name']}_deconvolved.h5",
         )
 

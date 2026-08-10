@@ -28,7 +28,8 @@ with app.setup:
     # if str(_root_dir) not in sys.path:
     #     sys.path.append(str(_root_dir))
 
-    from src.psf_generator import MaldiPSFGenerator
+    from src.psf_generator import MaldiPSFGenerator, load_psf_kernels, load_psf_params
+    from src.plotting import image_comparison_layout
 
 
 @app.cell(hide_code=True)
@@ -55,10 +56,10 @@ def _():
         r"data/images/SMALDI 1.4/Cerebellum/012-6_Cerebellum_A42_600nm/deconvolved_2026-05-11_08-18-45/Exploris240-2_CC012-6_Cerebellum_DHAP_A42_600nm_900x400_2kV.imzml_deconvolved.h5"
     )
 
-    sim_xr = xr.open_dataset(
-        r"data/images/SMALDI 1.4/Cerebellum/012-6_Cerebellum_A42_600nm/deconvolved_2026-05-11_08-18-45/Exploris240-2_CC012-6_Cerebellum_DHAP_A42_600nm_900x400_2kV.imzml_simulation_data.h5"
-    )
-    return data_xr, sim_xr
+    _sim_params_path = r"data/images/SMALDI 1.4/Cerebellum/012-6_Cerebellum_A42_600nm/deconvolved_2026-05-11_08-18-45/Exploris240-2_CC012-6_Cerebellum_DHAP_A42_600nm_900x400_2kV.imzml_simulation_data.json"
+    sim_params = load_psf_params(_sim_params_path)
+    sim_kernels = load_psf_kernels(_sim_params_path)
+    return data_xr, sim_kernels, sim_params
 
 
 @app.cell
@@ -797,8 +798,8 @@ def _():
 
 
 @app.cell
-def _(sim_xr):
-    pixel_size_um = float(sim_xr.attrs.get("step_size_um", 1.0))
+def _(sim_params):
+    pixel_size_um = float(sim_params.get("step_size_um", 1.0))
     pixel_size_um
     return (pixel_size_um,)
 
@@ -809,7 +810,7 @@ def _(
     pixel_size_um,
     selected_iteration,
     selected_mz_list,
-    sim_xr,
+    sim_kernels,
     top_n_mz,
 ):
     if selected_mz_list is not None:
@@ -818,7 +819,7 @@ def _(
         _raw_med = data_xr.sel(iteration=0).median(dim=["y", "x"])
         _top_mz_frc = _raw_med.sortby(_raw_med, ascending=False).m_z[:top_n_mz]
 
-    _psf_frc = sim_xr.final_signal_kernel.values
+    _psf_frc = sim_kernels["final_signal_kernel"]
 
     _frc_raw_list, _frc_deconv_list = [], []
     _res_raw_list, _res_deconv_list = [], []
@@ -1090,7 +1091,7 @@ def _():
 
 
 @app.cell
-def _(data_xr, selected_iteration, selected_mz_list, sim_xr, top_n_mz):
+def _(data_xr, selected_iteration, selected_mz_list, sim_kernels, top_n_mz):
     from scipy.signal import fftconvolve as _fftconvolve
 
     if selected_mz_list is not None:
@@ -1099,7 +1100,7 @@ def _(data_xr, selected_iteration, selected_mz_list, sim_xr, top_n_mz):
         _raw_med3 = data_xr.sel(iteration=0).median(dim=["y", "x"])
         _top_mz_res = _raw_med3.sortby(_raw_med3, ascending=False).m_z[:top_n_mz]
 
-    _psf = sim_xr.final_signal_kernel.values
+    _psf = sim_kernels["final_signal_kernel"]
 
     _da_raw_res = data_xr.sel(iteration=0, m_z=_top_mz_res)
     _da_deconv_res = data_xr.sel(iteration=selected_iteration, m_z=_top_mz_res)
@@ -1164,11 +1165,14 @@ def _(raw_map_da, reblurred_map_da, residual_map_da, selected_iteration):
         cmap="RdBu_r",
     )
 
-    hv.Layout([_plot_raw, _plot_reb, _plot_res]).cols(3).opts(
-        hv.opts.Image(invert_yaxis=True, frame_height=200, frame_width=200),
-        hv.opts.Layout(
-            title="Residual Map Analysis (top-1 m/z by median intensity)", 
-        ),
+    image_comparison_layout(
+        [_plot_raw, _plot_reb, _plot_res],
+        cols=3,
+        opts_group="Image",
+        invert_yaxis=True,
+        frame_height=200,
+        frame_width=200,
+        title="Residual Map Analysis (top-1 m/z by median intensity)",
     )
     return
 
@@ -1224,10 +1228,10 @@ def _():
 
 
 @app.cell
-def _(data_xr, selected_mz_list, sim_xr, top_n_mz):
+def _(data_xr, selected_mz_list, sim_kernels, top_n_mz):
     from scipy.signal import fftconvolve as _fc_sweep
 
-    _psf_sweep = sim_xr.final_signal_kernel.values
+    _psf_sweep = sim_kernels["final_signal_kernel"]
 
     _stored_all = sorted(data_xr.iteration.values.tolist())
     _nonzero_iters = [i for i in _stored_all if i > 0]
