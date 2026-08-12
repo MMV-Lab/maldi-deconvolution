@@ -169,16 +169,16 @@ def perform_batch_deconvolution(
 ) -> np.ndarray:
     """
     Operates on a chunk of data.
-    Input shape:  (batch, y, x)  <- corresponds to a chunk of m_z
-    Output shape: (batch, iteration, y, x)
+    Input shape:  (batch, Y, X)  <- corresponds to a chunk of M_Z
+    Output shape: (batch, ITERATION, Y, X)
     """
     # 1. Prepare output array
-    # Shape: (batch_size, num_iterations + 1, y, x)
+    # Shape: (batch_size, num_iterations + 1, Y, X)
     batch_size, h, w = img_batch.shape
     out_shape = (batch_size, num_iterations + 1, h, w)
     output = np.zeros(out_shape, dtype=np.float32)
 
-    # 2. Iterate over the batch (the m_z chunk)
+    # 2. Iterate over the batch (the M_Z chunk)
     # We loop manually here, which is often faster/safer than np.vectorize
     for i in range(batch_size):
         img_2d = img_batch[i].astype(np.float32)
@@ -206,23 +206,23 @@ def perform_batch_deconvolution(
 def deconvolute_dataset(
     input_xarray: xr.DataArray, kernel: np.ndarray, num_iterations: int = 10
 ) -> xr.DataArray:
-    """Richardson-Lucy deconvolve each ``(y, x)`` slice of `input_xarray`
-    against `kernel`, adding a new ``iteration`` dim (0..`num_iterations`)."""
+    """Richardson-Lucy deconvolve each ``(Y, X)`` slice of `input_xarray`
+    against `kernel`, adding a new ``ITERATION`` dim (0..`num_iterations`)."""
     iter_coords = np.arange(num_iterations + 1)
 
     deconvolved_da = xr.apply_ufunc(
         perform_batch_deconvolution,
         input_xarray,
         kwargs={"kernel": kernel, "num_iterations": num_iterations},
-        input_core_dims=[["y", "x"]],
-        output_core_dims=[["iteration", "y", "x"]],
+        input_core_dims=[["Y", "X"]],
+        output_core_dims=[["ITERATION", "Y", "X"]],
         vectorize=False,
         dask="parallelized",
         output_dtypes=[np.float32],
-        dask_gufunc_kwargs={"output_sizes": {"iteration": len(iter_coords)}},
+        dask_gufunc_kwargs={"output_sizes": {"ITERATION": len(iter_coords)}},
     )
 
-    deconvolved_da = deconvolved_da.assign_coords(iteration=iter_coords)
+    deconvolved_da = deconvolved_da.assign_coords(ITERATION=iter_coords)
 
     deconvolved_da.name = "deconvolved_ion_intensity"
     deconvolved_da.attrs["long_name"] = "Ion Intensity"

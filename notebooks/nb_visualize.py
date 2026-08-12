@@ -39,7 +39,7 @@ def _():
     mo.md(r"""
     # Welcome!
 
-    ## This notebook serves the purpose of exporting useful visualizations and raw image data from an already processed `h5` file.
+    ## This notebook serves the purpose of exporting useful visualizations and raw image data from an already processed `h5` or `ome.zarr` file.
     """)
     return
 
@@ -47,12 +47,12 @@ def _():
 @app.cell
 def _():
     widget_selected_file = mo.ui.file_browser(
-        filetypes=[".h5"], multiple=False, 
+        filetypes=[".h5", ".ome.zarr"], selection_mode="all", multiple=False,
     )
     mo.vstack(
         [
             mo.md(
-                "## Select an `h5` file. Both deconvolved and original data are accepted"
+                "## Select an `h5` or `ome.zarr` file. Both deconvolved and original data are accepted"
             ),
             widget_selected_file,
         ]
@@ -66,10 +66,6 @@ def _(widget_selected_file):
         input_file = widget_selected_file.value[0].path
         out_dir = input_file.parent
         data_xr = load_dataarray(input_file)
-        if "X" in data_xr.dims:
-            data_xr = data_xr.rename({"X": "x"})
-        if "Y" in data_xr.dims:
-            data_xr = data_xr.rename({"Y": "y"})
         mo.output.append(
             mo.md(
                 f"""Correctly loaded `{input_file.name}` from 
@@ -89,7 +85,7 @@ def _():
 
 @app.cell
 def _(cmap_dict, data_xr, out_dir):
-    mz_vals = data_xr.m_z.values
+    mz_vals = data_xr.M_Z.values
     mz_options = {f"{val:.4f}": val for val in mz_vals}
 
     m_z_widget = pn.widgets.DiscreteSlider(
@@ -97,9 +93,9 @@ def _(cmap_dict, data_xr, out_dir):
     )
 
     # Check for iteration dimension
-    has_iteration = "iteration" in data_xr.dims
+    has_iteration = "ITERATION" in data_xr.dims
     if has_iteration:
-        iteration_vals = list(data_xr.iteration.values)
+        iteration_vals = list(data_xr.ITERATION.values)
         iteration_widget = pn.widgets.DiscreteSlider(
             name="Iteration",
             options=iteration_vals,
@@ -138,10 +134,10 @@ def _(cmap_dict, data_xr, out_dir):
     def get_image_plot(m_z, iteration, low_p, high_p, cmap_name):
 
         if has_iteration and iteration is not None:
-            slice_data = data_xr.sel(m_z=m_z, iteration=iteration)
+            slice_data = data_xr.sel(M_Z=m_z, ITERATION=iteration)
             title = f"m/z = {m_z:.4f} , iteration = {iteration}"
         else:
-            slice_data = data_xr.sel(m_z=m_z)
+            slice_data = data_xr.sel(M_Z=m_z)
             title = f"m/z = {m_z:.4f}"
 
         v_min, v_max = np.nanpercentile(slice_data.values, [low_p, high_p])
@@ -155,8 +151,8 @@ def _(cmap_dict, data_xr, out_dir):
         )
 
         return slice_data.hvplot.image(
-            x="x",
-            y="y",
+            x="X",
+            y="Y",
             # aspect=1,
             data_aspect=_aspect,
             width=700,
@@ -245,9 +241,9 @@ def _(cmap_dict, data_xr, out_dir):
 
             # Save the raw numeric slice (float32), similar to the datacube export.
             raw_slice = (
-                data_xr.sel(m_z=m_z_widget.value, iteration=iter_val)
+                data_xr.sel(M_Z=m_z_widget.value, ITERATION=iter_val)
                 if iter_val is not None
-                else data_xr.sel(m_z=m_z_widget.value)
+                else data_xr.sel(M_Z=m_z_widget.value)
             )
             raw_tiff_path = out_dir / f"{base_name}_raw.tiff"
             tifffile.imwrite(
@@ -356,8 +352,8 @@ def _():
 
 @app.cell
 def _(data_xr, mz_options):
-    _tmp = data_xr.isel(iteration=-1).median(dim=["x", "y"])
-    _mz_intensity_map = dict(zip(_tmp.m_z.values, _tmp.values))
+    _tmp = data_xr.isel(ITERATION=-1).median(dim=["X", "Y"])
+    _mz_intensity_map = dict(zip(_tmp.M_Z.values, _tmp.values))
     _sorted_keys = sorted(
         mz_options.keys(),
         key=lambda k: _mz_intensity_map.get(mz_options[k], 0),
@@ -372,10 +368,10 @@ def _(data_xr, mz_options):
     )
 
     iteration_multichannel = mo.ui.slider(
-        steps=data_xr.iteration.values,
+        steps=data_xr.ITERATION.values,
         show_value=True,
         label="Iteration",
-        value=max(data_xr.iteration.values),
+        value=max(data_xr.ITERATION.values),
     )
 
     mo.vstack([m_z_multichannel, iteration_multichannel])
@@ -450,8 +446,8 @@ def _(
 
     for i in range(len(m_z_multichannel.value)):
         _data = data_xr.sel(
-            m_z=m_z_multichannel.value[i],
-            iteration=iteration_multichannel.value,
+            M_Z=m_z_multichannel.value[i],
+            ITERATION=iteration_multichannel.value,
         )
         _span = np.nanpercentile(
             _data.values,
@@ -459,7 +455,7 @@ def _(
         )
         _span.tolist()
         _ch = shade(
-            _data.isel(y=slice(None, None, -1)),  # INVERT THE Y DIRECTION
+            _data.isel(Y=slice(None, None, -1)),  # INVERT THE Y DIRECTION
             cmap=colormap_multichannel.value[i],
             how="linear",
             span=_span,
@@ -619,10 +615,10 @@ def _():
 def _():
     # if iteration_widget:
     #     slice_sel = data_xr.sel(
-    #         m_z=m_z_widget.value, iteration=iteration_widget.value
+    #         M_Z=m_z_widget.value, ITERATION=iteration_widget.value
     #     )
     # else:
-    #     slice_sel = data_xr.sel(m_z=m_z_widget.value)
+    #     slice_sel = data_xr.sel(M_Z=m_z_widget.value)
 
     # _plot = slice_sel.hvplot.image(aspect="square", colorbar=True)
     #

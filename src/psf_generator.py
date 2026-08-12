@@ -570,61 +570,61 @@ class MaldiPSFGenerator:
         x_coords = self.xv[0, :]
         
         data_vars = {
-            "spatial_profile": (["y", "x"], self.spatial_profile),
-            "dose_map": (["y", "x"], self.dose_map),
-            "decay_map": (["y", "x"], self.decay_map),
-            "final_signal": (["y", "x"], self.final_signal),
+            "spatial_profile": (["Y", "X"], self.spatial_profile),
+            "dose_map": (["Y", "X"], self.dose_map),
+            "decay_map": (["Y", "X"], self.decay_map),
+            "final_signal": (["Y", "X"], self.final_signal),
         }
-        
+
         ds = xr.Dataset(
             data_vars=data_vars,
-            coords={"y": y_coords, "x": x_coords},
+            coords={"Y": y_coords, "X": x_coords},
         )
-        
-        ds.x.attrs["units"] = "μm"
-        ds.y.attrs["units"] = "μm"
-        
+
+        ds.X.attrs["units"] = "μm"
+        ds.Y.attrs["units"] = "μm"
+
         if fov_only and self.fov_span is not None:
             half_fov = self.fov_span / 2.0
             # Slicing the dataset to the requested FOV
             ds = ds.sel(
-                x=slice(-half_fov, half_fov),
-                y=slice(-half_fov, half_fov)
+                X=slice(-half_fov, half_fov),
+                Y=slice(-half_fov, half_fov)
             )
-            
+
         # Add Kernel versions (Coarse Grid)
         if self.spatial_kernel is not None:
             kc = self.kernel_size // 2
             kx = (np.arange(self.kernel_size) - kc) * self.step_size_um
             ky = (np.arange(self.kernel_size) - kc) * self.step_size_um
-            
-            ds["spatial_kernel"] = (["y_kernel", "x_kernel"], self.spatial_kernel)
-            ds["pass_map"] = (["y_kernel", "x_kernel"], self.pass_map)
-            ds["final_signal_kernel"] = (["y_kernel", "x_kernel"], self.final_signal_kernel)
-            
+
+            ds["spatial_kernel"] = (["Y_KERNEL", "X_KERNEL"], self.spatial_kernel)
+            ds["pass_map"] = (["Y_KERNEL", "X_KERNEL"], self.pass_map)
+            ds["final_signal_kernel"] = (["Y_KERNEL", "X_KERNEL"], self.final_signal_kernel)
+
             ds = ds.assign_coords({
-                "x_kernel": kx,
-                "y_kernel": ky
+                "X_KERNEL": kx,
+                "Y_KERNEL": ky
             })
-            
-            ds.x_kernel.attrs["long_name"] = "x"
-            ds.y_kernel.attrs["long_name"] = "y"
-            ds.x_kernel.attrs["units"] = "μm"
-            ds.y_kernel.attrs["units"] = "μm"
+
+            ds.X_KERNEL.attrs["long_name"] = "X"
+            ds.Y_KERNEL.attrs["long_name"] = "Y"
+            ds.X_KERNEL.attrs["units"] = "μm"
+            ds.Y_KERNEL.attrs["units"] = "μm"
 
         # Add Decay Data
         if self.decay_factors:
             passes = np.arange(1, len(self.decay_factors) + 1)
-            ds["decay_measured"] = (["pass_idx"], self.decay_factors)
-            ds = ds.assign_coords({"pass_idx": passes})
+            ds["decay_measured"] = (["PASS_IDX"], self.decay_factors)
+            ds = ds.assign_coords({"PASS_IDX": passes})
 
             ds.decay_measured.attrs["long_name"] = "Normalized Intensity"
-            ds.pass_idx.attrs["long_name"] = "Number of Passes"
+            ds.PASS_IDX.attrs["long_name"] = "Number of Passes"
 
             if self.decay_errors is not None and len(self.decay_errors) == len(self.decay_factors):
-                ds["decay_errors"] = (["pass_idx"], self.decay_errors)
+                ds["decay_errors"] = (["PASS_IDX"], self.decay_errors)
                 ds.decay_errors.attrs["long_name"] = "Measurement Error (sigma)"
-            # ds.pass_idx.attrs["units"] = "count"
+            # ds.PASS_IDX.attrs["units"] = "count"
 
             # Add Fit Curve if available
             x_fit = np.linspace(0, np.max(passes), 100)
@@ -646,10 +646,10 @@ class MaldiPSFGenerator:
                     y_fit = decay_func(x_fit)
                 
                 if y_fit is not None:
-                    ds["decay_fit"] = (["pass_idx_fit"], y_fit)
-                    ds = ds.assign_coords({"pass_idx_fit": x_fit})
-                    ds.pass_idx_fit.attrs["long_name"] = "Number of Passes"
-                    # ds.pass_idx_fit.attrs["units"] = "count"
+                    ds["decay_fit"] = (["PASS_IDX_FIT"], y_fit)
+                    ds = ds.assign_coords({"PASS_IDX_FIT": x_fit})
+                    ds.PASS_IDX_FIT.attrs["long_name"] = "Number of Passes"
+                    # ds.PASS_IDX_FIT.attrs["units"] = "count"
 
         ds.attrs.update(
             {

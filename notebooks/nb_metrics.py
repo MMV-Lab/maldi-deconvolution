@@ -29,6 +29,7 @@ with app.setup:
     #     sys.path.append(str(_root_dir))
 
     from src.psf_generator import MaldiPSFGenerator, load_psf_kernels, load_psf_params
+    from src.imzml_io import load_dataarray
     from src.plotting import image_comparison_layout
 
 
@@ -52,7 +53,7 @@ def _():
 
 @app.cell
 def _():
-    data_xr = xr.open_dataarray(
+    data_xr = load_dataarray(
         r"data/images/SMALDI 1.4/Cerebellum/012-6_Cerebellum_A42_600nm/deconvolved_2026-05-11_08-18-45/Exploris240-2_CC012-6_Cerebellum_DHAP_A42_600nm_900x400_2kV.imzml_deconvolved.h5"
     )
 
@@ -84,7 +85,7 @@ def compute_metrics(
     Parameters
     ----------
     da_3d : xr.DataArray
-        Must have dims ``(m_z, y, x)``.
+        Must have dims ``(M_Z, Y, X)``.
     outlier_clip_pct : float or None
         Per-channel percentile (0–1) at which to clip intensity values before
         computing metrics.  Useful for raw images with saturated pixels.
@@ -110,7 +111,7 @@ def compute_metrics(
     # Clip per-channel outliers so saturated pixels don't corrupt gradient /
     # range metrics.  clip() broadcasts correctly over m_z.
     if outlier_clip_pct is not None:
-        clip_vals = da_3d.quantile(outlier_clip_pct, dim=["y", "x"]).drop_vars(
+        clip_vals = da_3d.quantile(outlier_clip_pct, dim=["Y", "X"]).drop_vars(
             "quantile"
         )
         da_3d = da_3d.clip(min=0, max=clip_vals)
@@ -169,7 +170,7 @@ def compute_metrics(
         return xr.apply_ufunc(
             func,
             da_3d,
-            input_core_dims=[["y", "x"]],
+            input_core_dims=[["Y", "X"]],
             vectorize=True,
             output_dtypes=[float],
         )
@@ -178,10 +179,10 @@ def compute_metrics(
     sharpness = _scalar_ufunc(_mean_gradient_magnitude)
 
     # 2. Excess Kurtosis – peakedness of intensity distribution
-    mu = da_3d.mean(dim=["y", "x"])
+    mu = da_3d.mean(dim=["Y", "X"])
     diff = da_3d - mu
-    m2 = (diff**2).mean(dim=["y", "x"])
-    m4 = (diff**4).mean(dim=["y", "x"])
+    m2 = (diff**2).mean(dim=["Y", "X"])
+    m4 = (diff**4).mean(dim=["Y", "X"])
     kurtosis = m4 / (m2**2 + 1e-30) - 3.0
 
     # 3. Gini Coefficient – spatial concentration of signal
@@ -194,9 +195,9 @@ def compute_metrics(
     entropy = _scalar_ufunc(_shannon_entropy)
 
     # 6. Total Variation – sum of absolute first-order differences
-    tv = da_3d.diff("y").pipe(np.abs).sum(dim=["y", "x"]) + da_3d.diff(
-        "x"
-    ).pipe(np.abs).sum(dim=["y", "x"])
+    tv = da_3d.diff("Y").pipe(np.abs).sum(dim=["Y", "X"]) + da_3d.diff(
+        "X"
+    ).pipe(np.abs).sum(dim=["Y", "X"])
 
     # 7. Dynamic Range – 99th-percentile / 5th-percentile (both over non-zero pixels).
     # Using non-zero pixels avoids the median collapsing to 0 on sparse MALDI images,
@@ -233,7 +234,7 @@ def compute_comparison_metrics(
 ) -> xr.Dataset:
     """
     Compute per-m/z cross-comparison metrics between raw and deconvolved DataArrays.
-    Both must have dims ``(m_z, y, x)``.
+    Both must have dims ``(M_Z, Y, X)``.
 
     Metrics
     -------
@@ -291,7 +292,7 @@ def compute_comparison_metrics(
             func,
             da_raw,
             da_deconv,
-            input_core_dims=[["y", "x"], ["y", "x"]],
+            input_core_dims=[["Y", "X"], ["Y", "X"]],
             vectorize=True,
             output_dtypes=[float],
         )
@@ -310,7 +311,7 @@ def compute_comparison_metrics(
                 _conv_delta,
                 da_deconv,
                 da_prev,
-                input_core_dims=[["y", "x"], ["y", "x"]],
+                input_core_dims=[["Y", "X"], ["Y", "X"]],
                 vectorize=True,
                 output_dtypes=[float],
             )
@@ -329,13 +330,13 @@ def compute_comparison_metrics(
 def _(data_xr, selected_iteration, selected_mz_list, top_n_mz):
     # Select m/z channels: use explicit list if provided, otherwise top N by median intensity
     if selected_mz_list is not None:
-        _top_mz = data_xr.m_z.sel(m_z=selected_mz_list)
+        _top_mz = data_xr.M_Z.sel(M_Z=selected_mz_list)
     else:
-        _raw_median = data_xr.sel(iteration=0).median(dim=["y", "x"])
-        _top_mz = _raw_median.sortby(_raw_median, ascending=False).m_z[:top_n_mz]
+        _raw_median = data_xr.sel(ITERATION=0).median(dim=["Y", "X"])
+        _top_mz = _raw_median.sortby(_raw_median, ascending=False).M_Z[:top_n_mz]
 
-    _da_raw = data_xr.sel(iteration=0, m_z=_top_mz)
-    _da_deconv = data_xr.sel(iteration=selected_iteration, m_z=_top_mz)
+    _da_raw = data_xr.sel(ITERATION=0, M_Z=_top_mz)
+    _da_deconv = data_xr.sel(ITERATION=selected_iteration, M_Z=_top_mz)
 
     _ds_raw = compute_metrics(_da_raw, outlier_clip_pct=0.999)
     _ds_deconv = compute_metrics(_da_deconv)
@@ -355,10 +356,10 @@ def _(data_xr, selected_iteration, selected_mz_list, top_n_mz):
     )
 
     # Convergence delta: compare selected_iteration against the previous stored iteration
-    _stored_iters = sorted(data_xr.iteration.values.tolist())
+    _stored_iters = sorted(data_xr.ITERATION.values.tolist())
     _prev_idx = _stored_iters.index(selected_iteration) - 1
     _da_prev = (
-        data_xr.sel(iteration=_stored_iters[_prev_idx], m_z=_top_mz)
+        data_xr.sel(ITERATION=_stored_iters[_prev_idx], M_Z=_top_mz)
         if _prev_idx >= 0
         else None
     )
@@ -743,7 +744,7 @@ def compute_residual_metrics_per_mz(
             func,
             da_raw,
             da_deconv,
-            input_core_dims=[["y", "x"], ["y", "x"]],
+            input_core_dims=[["Y", "X"], ["Y", "X"]],
             vectorize=True,
             output_dtypes=[float],
         )
@@ -814,10 +815,10 @@ def _(
     top_n_mz,
 ):
     if selected_mz_list is not None:
-        _top_mz_frc = data_xr.m_z.sel(m_z=selected_mz_list)
+        _top_mz_frc = data_xr.M_Z.sel(M_Z=selected_mz_list)
     else:
-        _raw_med = data_xr.sel(iteration=0).median(dim=["y", "x"])
-        _top_mz_frc = _raw_med.sortby(_raw_med, ascending=False).m_z[:top_n_mz]
+        _raw_med = data_xr.sel(ITERATION=0).median(dim=["Y", "X"])
+        _top_mz_frc = _raw_med.sortby(_raw_med, ascending=False).M_Z[:top_n_mz]
 
     _psf_frc = sim_kernels["final_signal_kernel"]
 
@@ -826,7 +827,7 @@ def _(
     _bc_ref = None
 
     for _mz in _top_mz_frc.values:
-        _r = data_xr.sel(iteration=0, m_z=_mz).values.astype(np.float64)
+        _r = data_xr.sel(ITERATION=0, M_Z=_mz).values.astype(np.float64)
         _nh = _r.shape[0] // 2
 
         # Raw FRC: split raw into odd/even rows and correlate directly
@@ -850,17 +851,17 @@ def _(
         {
             "raw": xr.DataArray(
                 np.nanmean(_frc_raw_list, axis=0),
-                dims=["freq"],
-                coords={"freq": _bc_ref},
+                dims=["FREQ"],
+                coords={"FREQ": _bc_ref},
             ),
             "deconvolved": xr.DataArray(
                 np.nanmean(_frc_deconv_list, axis=0),
-                dims=["freq"],
-                coords={"freq": _bc_ref},
+                dims=["FREQ"],
+                coords={"FREQ": _bc_ref},
             ),
         }
     )
-    frc_ds["freq"].attrs.update(
+    frc_ds["FREQ"].attrs.update(
         {"units": "1/µm", "long_name": "Spatial Frequency"}
     )
 
@@ -890,7 +891,7 @@ def _(frc_ds, selected_iteration, selected_mz_list, top_n_mz):
             label="raw",
             color="gray",
             line_width=2,
-            x="freq",
+            x="FREQ",
             xlabel="Spatial Frequency [1/µm]",
             ylabel="FRC",
             title=f"Fourier Ring Correlation — half-dataset, avg. over {_n_mz_label} m/z channels",
@@ -962,18 +963,18 @@ def _():
 @app.cell
 def _(data_xr, pixel_size_um, selected_iteration, selected_mz_list, top_n_mz):
     if selected_mz_list is not None:
-        _top_mz_dc = data_xr.m_z.sel(m_z=selected_mz_list)
+        _top_mz_dc = data_xr.M_Z.sel(M_Z=selected_mz_list)
     else:
-        _raw_med2 = data_xr.sel(iteration=0).median(dim=["y", "x"])
-        _top_mz_dc = _raw_med2.sortby(_raw_med2, ascending=False).m_z[:top_n_mz]
+        _raw_med2 = data_xr.sel(ITERATION=0).median(dim=["Y", "X"])
+        _top_mz_dc = _raw_med2.sortby(_raw_med2, ascending=False).M_Z[:top_n_mz]
 
     _decorr_raw_list, _decorr_deconv_list = [], []
     _res_raw_dc, _res_deconv_dc = [], []
     _freqs_ref = None
 
     for _mz in _top_mz_dc.values:
-        _r = data_xr.sel(iteration=0, m_z=_mz).values
-        _d = data_xr.sel(iteration=selected_iteration, m_z=_mz).values
+        _r = data_xr.sel(ITERATION=0, M_Z=_mz).values
+        _d = data_xr.sel(ITERATION=selected_iteration, M_Z=_mz).values
 
         _fq, _dr, _rr = compute_decorrelation_curve(
             _r, pixel_size_um=pixel_size_um
@@ -989,17 +990,17 @@ def _(data_xr, pixel_size_um, selected_iteration, selected_mz_list, top_n_mz):
         {
             "raw": xr.DataArray(
                 np.nanmean(_decorr_raw_list, axis=0),
-                dims=["freq"],
-                coords={"freq": _freqs_ref},
+                dims=["FREQ"],
+                coords={"FREQ": _freqs_ref},
             ),
             "deconvolved": xr.DataArray(
                 np.nanmean(_decorr_deconv_list, axis=0),
-                dims=["freq"],
-                coords={"freq": _freqs_ref},
+                dims=["FREQ"],
+                coords={"FREQ": _freqs_ref},
             ),
         }
     )
-    decorr_ds["freq"].attrs.update(
+    decorr_ds["FREQ"].attrs.update(
         {"units": "1/µm", "long_name": "Spatial Frequency"}
     )
 
@@ -1029,7 +1030,7 @@ def _(decorr_ds, selected_iteration, selected_mz_list, top_n_mz):
             label="raw",
             color="gray",
             line_width=2,
-            x="freq",
+            x="FREQ",
             xlabel="Spatial Frequency [1/µm]",
             ylabel="Normalised Cross-Correlation d(f)",
             title=f"Decorrelation Analysis — avg. over {_n_mz_label} m/z channels",
@@ -1095,15 +1096,15 @@ def _(data_xr, selected_iteration, selected_mz_list, sim_kernels, top_n_mz):
     from scipy.signal import fftconvolve as _fftconvolve
 
     if selected_mz_list is not None:
-        _top_mz_res = data_xr.m_z.sel(m_z=selected_mz_list)
+        _top_mz_res = data_xr.M_Z.sel(M_Z=selected_mz_list)
     else:
-        _raw_med3 = data_xr.sel(iteration=0).median(dim=["y", "x"])
-        _top_mz_res = _raw_med3.sortby(_raw_med3, ascending=False).m_z[:top_n_mz]
+        _raw_med3 = data_xr.sel(ITERATION=0).median(dim=["Y", "X"])
+        _top_mz_res = _raw_med3.sortby(_raw_med3, ascending=False).M_Z[:top_n_mz]
 
     _psf = sim_kernels["final_signal_kernel"]
 
-    _da_raw_res = data_xr.sel(iteration=0, m_z=_top_mz_res)
-    _da_deconv_res = data_xr.sel(iteration=selected_iteration, m_z=_top_mz_res)
+    _da_raw_res = data_xr.sel(ITERATION=0, M_Z=_top_mz_res)
+    _da_deconv_res = data_xr.sel(ITERATION=selected_iteration, M_Z=_top_mz_res)
 
     residual_ds = compute_residual_metrics_per_mz(
         _da_raw_res, _da_deconv_res, _psf
@@ -1112,30 +1113,30 @@ def _(data_xr, selected_iteration, selected_mz_list, sim_kernels, top_n_mz):
 
     # Build residual map for the first m/z in the selection (for visual inspection)
     _top1_mz = float(_top_mz_res.values[0])
-    _raw_img = data_xr.sel(iteration=0, m_z=_top1_mz).values.astype(np.float64)
+    _raw_img = data_xr.sel(ITERATION=0, M_Z=_top1_mz).values.astype(np.float64)
     _dec_img = data_xr.sel(
-        iteration=selected_iteration, m_z=_top1_mz
+        ITERATION=selected_iteration, M_Z=_top1_mz
     ).values.astype(np.float64)
     _reb = _fftconvolve(_dec_img, _psf.astype(np.float64), mode="same")
 
     residual_map_da = xr.DataArray(
         _raw_img - _reb,
-        dims=["y", "x"],
-        coords={"y": data_xr.y.values, "x": data_xr.x.values},
+        dims=["Y", "X"],
+        coords={"Y": data_xr.Y.values, "X": data_xr.X.values},
         name="residual",
         attrs={"long_name": f"Residual (raw − re-blurred), m/z={_top1_mz:.4f}"},
     )
     reblurred_map_da = xr.DataArray(
         _reb,
-        dims=["y", "x"],
-        coords={"y": data_xr.y.values, "x": data_xr.x.values},
+        dims=["Y", "X"],
+        coords={"Y": data_xr.Y.values, "X": data_xr.X.values},
         name="reblurred",
         attrs={"long_name": f"Re-blurred (deconv ⊗ PSF), m/z={_top1_mz:.4f}"},
     )
     raw_map_da = xr.DataArray(
         _raw_img,
-        dims=["y", "x"],
-        coords={"y": data_xr.y.values, "x": data_xr.x.values},
+        dims=["Y", "X"],
+        coords={"Y": data_xr.Y.values, "X": data_xr.X.values},
         name="raw",
         attrs={"long_name": f"Raw, m/z={_top1_mz:.4f}"},
     )
@@ -1233,16 +1234,16 @@ def _(data_xr, selected_mz_list, sim_kernels, top_n_mz):
 
     _psf_sweep = sim_kernels["final_signal_kernel"]
 
-    _stored_all = sorted(data_xr.iteration.values.tolist())
+    _stored_all = sorted(data_xr.ITERATION.values.tolist())
     _nonzero_iters = [i for i in _stored_all if i > 0]
 
     if selected_mz_list is not None:
-        _top_mz_sw = data_xr.m_z.sel(m_z=selected_mz_list)
+        _top_mz_sw = data_xr.M_Z.sel(M_Z=selected_mz_list)
     else:
-        _raw_med_sw = data_xr.sel(iteration=0).median(dim=["y", "x"])
-        _top_mz_sw = _raw_med_sw.sortby(_raw_med_sw, ascending=False).m_z[:top_n_mz]
+        _raw_med_sw = data_xr.sel(ITERATION=0).median(dim=["Y", "X"])
+        _top_mz_sw = _raw_med_sw.sortby(_raw_med_sw, ascending=False).M_Z[:top_n_mz]
 
-    _da_raw_sw = data_xr.sel(iteration=0, m_z=_top_mz_sw)
+    _da_raw_sw = data_xr.sel(ITERATION=0, M_Z=_top_mz_sw)
 
     def _nrmse_mean_scalar(arr_raw: np.ndarray, arr_dec: np.ndarray) -> float:
         reb = _fc_sweep(arr_dec.astype(np.float64), _psf_sweep.astype(np.float64), mode="same")
@@ -1338,10 +1339,10 @@ def _(data_xr, selected_mz_list, sim_kernels, top_n_mz):
 
     _rows = []
     for _it in _nonzero_iters:
-        _da_it = data_xr.sel(iteration=_it, m_z=_top_mz_sw)
+        _da_it = data_xr.sel(ITERATION=_it, M_Z=_top_mz_sw)
         _prev_idx_sw = _stored_all.index(_it) - 1
         _da_prev_sw = (
-            data_xr.sel(iteration=_stored_all[_prev_idx_sw], m_z=_top_mz_sw)
+            data_xr.sel(ITERATION=_stored_all[_prev_idx_sw], M_Z=_top_mz_sw)
             if _prev_idx_sw >= 0
             else None
         )
@@ -1351,7 +1352,7 @@ def _(data_xr, selected_mz_list, sim_kernels, top_n_mz):
             _nrmse_mean_scalar,
             _da_raw_sw,
             _da_it,
-            input_core_dims=[["y", "x"], ["y", "x"]],
+            input_core_dims=[["Y", "X"], ["Y", "X"]],
             vectorize=True,
             output_dtypes=[float],
         )
@@ -1359,13 +1360,13 @@ def _(data_xr, selected_mz_list, sim_kernels, top_n_mz):
             _fixed_bg_noise,
             _da_raw_sw,
             _da_it,
-            input_core_dims=[["y", "x"], ["y", "x"]],
+            input_core_dims=[["Y", "X"], ["Y", "X"]],
             vectorize=True,
             output_dtypes=[float],
         )
         _ufunc_nr = lambda fn: xr.apply_ufunc(
             fn, _da_it,
-            input_core_dims=[["y", "x"]],
+            input_core_dims=[["Y", "X"]],
             vectorize=True, output_dtypes=[float],
         )
         _rows.append({

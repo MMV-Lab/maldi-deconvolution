@@ -135,23 +135,23 @@ def _(parameters_form):
 @app.cell
 def _(maldi_psf_ds):
     decay_plot = maldi_psf_ds.decay_measured.hvplot.scatter(
-        x="pass_idx", label="Measured", color="black", size=50
+        x="PASS_IDX", label="Measured", color="black", size=50
     )
 
     if "decay_errors" in maldi_psf_ds:
         _err_data = {
-            "pass_idx": maldi_psf_ds.pass_idx.values,
+            "PASS_IDX": maldi_psf_ds.PASS_IDX.values,
             "intensity": maldi_psf_ds.decay_measured.values,
             "error": maldi_psf_ds.decay_errors.values,
         }
         _err_bars = hv.ErrorBars(
-            _err_data, kdims="pass_idx", vdims=["intensity", "error"]
+            _err_data, kdims="PASS_IDX", vdims=["intensity", "error"]
         ).opts(color="black", line_width=1.5)
         decay_plot = decay_plot * _err_bars
 
     if "decay_fit" in maldi_psf_ds:
         fit_line = maldi_psf_ds.decay_fit.hvplot.line(
-            x="pass_idx_fit", color="red", label="Fit", line_width=2
+            x="PASS_IDX_FIT", color="red", label="Fit", line_width=2
         )
         decay_plot = decay_plot * fit_line
 
@@ -216,8 +216,8 @@ def _(maldi_psf_ds):
         da = maldi_psf_ds[_var].rename("val")
 
         _img = da.hvplot.image(
-            x="x_kernel",
-            y="y_kernel",
+            x="X_KERNEL",
+            y="Y_KERNEL",
             title=_title,
             cmap=_cmap,
             frame_width=250,
@@ -227,7 +227,7 @@ def _(maldi_psf_ds):
             hover_tooltips=["val"],
         )
 
-        _lbl = da.round(2).hvplot.labels(x="x_kernel", y="y_kernel", hover=False)
+        _lbl = da.round(2).hvplot.labels(x="X_KERNEL", y="Y_KERNEL", hover=False)
 
         _plots.append(_img * _lbl)
 
@@ -246,11 +246,14 @@ def _(maldi_psf_ds):
 @app.cell
 def _():
     widget_selected_dir = mo.ui.file_browser(
-        multiple=False, selection_mode="file", filetypes=[".h5"], initial_path="data"
+        multiple=False,
+        selection_mode="all",
+        filetypes=[".h5", ".ome.zarr"],
+        initial_path="data",
     )
     mo.vstack(
         [
-            mo.md("# Select the h5 file cointaing the original data:"),
+            mo.md("# Select the original data (`.h5` file or `.ome.zarr` store):"),
             widget_selected_dir,
         ]
     )
@@ -274,7 +277,7 @@ def _(parameters_form, widget_selected_dir):
         )
 
         original_xr = load_dataarray(input)
-        original_xr = original_xr.chunk({"m_z": 1, "y": -1, "x": -1})
+        original_xr = original_xr.chunk({"M_Z": 1, "Y": -1, "X": -1})
         _sim_pixel_size = float(parameters_form.value["step_size"])
         _image_pixel_size = float(original_xr.attrs.get("pixel_size_x"))
         if _image_pixel_size != _sim_pixel_size:
@@ -306,8 +309,8 @@ def _(maldi_psf_ds, original_xr):
 @app.cell
 def _(result_xr):
     _preview = result_xr.hvplot.image(
-        x="x",
-        y="y",
+        x="X",
+        y="Y",
         data_aspect=1,
         cmap="magma",
         flip_yaxis=True,
@@ -361,7 +364,7 @@ def _(export_button, input, maldi_psf, result_xr):
 
         save_dataarray(
             result_xr,
-            out_dir / f"{result_xr.attrs['original_file_name']}_deconvolved.h5",
+            out_dir / f"{result_xr.attrs['original_file_name']}_deconvolved.ome.zarr",
         )
 
     mo.output.append(

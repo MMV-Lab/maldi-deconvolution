@@ -109,22 +109,22 @@ def export_xarray_to_tiff(
     tolerance = data_array.attrs.get("tolerance", 0.0)
     resolution = (1 / pixel_size_x, 1 / pixel_size_y)
 
-    has_iteration = "iteration" in data_array.dims
-    mz_vals = data_array.m_z.values
+    has_iteration = "ITERATION" in data_array.dims
+    mz_vals = data_array.M_Z.values
     total_mz = len(mz_vals)
 
     for i, mz in enumerate(mz_vals):
         if status_callback is not None:
             status_callback(f"Processing m/z {mz:.4f} ({i + 1}/{total_mz})")
 
-        img = data_array.sel(m_z=mz).values
+        img = data_array.sel(M_Z=mz).values
 
         if has_iteration:
-            # Select stack: (iteration, y, x)
+            # Select stack: (ITERATION, Y, X)
             axes = "TYX"
             fname = f"{original_file_name}_mz_{mz:.4f}±{tolerance}_deconvolved.tiff"
         else:
-            # Select slice: (y, x)
+            # Select slice: (Y, X)
             axes = "YX"
             fname = f"{original_file_name}_mz_{mz:.4f}±{tolerance}_original.tiff"
 

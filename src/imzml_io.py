@@ -4,8 +4,11 @@ data to disk.
 ``save_dataarray``/``load_dataarray`` dispatch on the path's extension:
 ``.zarr``/``.ome.zarr`` goes through the OME-Zarr reader/writer below
 (backed by bioio-ome-zarr), anything else through xarray's built-in
-netCDF/HDF5. ``m_z`` maps to the OME channel axis and ``iteration`` (if
-present) to the OME time axis.
+netCDF/HDF5. ``M_Z`` maps to the OME channel axis and ``ITERATION`` (if
+present) to the OME time axis; the OME space axes map straight through as
+``Y``/``X``. All four are uppercase -- every xarray dimension/coordinate
+name in this project's MSI representations is, matching bioio/BioImage's
+own axis-naming convention (``T``/``C``/``Z``/``Y``/``X``).
 
 Shared by the ``extract_data``, ``extract_decay_profile``, ``deconvolve``,
 and ``visualize`` notebooks.
@@ -50,8 +53,9 @@ def read_imzml_to_xarray(
     Returns
     -------
     xr.DataArray
-        Shape ``(n_mz, n_y, n_x)``, with x/y coordinates in μm and m/z as the
-        first dimension.
+        Shape ``(n_mz, n_y, n_x)``, dims ``(M_Z, Y, X)`` (X/Y coordinates in
+        μm), matching the uppercase dimension convention used throughout
+        this project's xarray representations (see module docstring).
     """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -137,8 +141,8 @@ def read_imzml_to_xarray(
 
     da = xr.DataArray(
         ion_image_stack,
-        coords={"m_z": m_z_values, "y": y_coords_um, "x": x_coords_um},
-        dims=("m_z", "y", "x"),
+        coords={"M_Z": m_z_values, "Y": y_coords_um, "X": x_coords_um},
+        dims=("M_Z", "Y", "X"),
         attrs={
             "tolerance": tolerance,
             "pixel_size_x": pixel_size_x,
@@ -147,9 +151,9 @@ def read_imzml_to_xarray(
         },
         name="ion_intensity",
     )
-    da.x.attrs["units"] = "μm"
-    da.y.attrs["units"] = "μm"
-    da.m_z.attrs["long_name"] = "m/z"
+    da.X.attrs["units"] = "μm"
+    da.Y.attrs["units"] = "μm"
+    da.M_Z.attrs["long_name"] = "m/z"
     da.attrs["long_name"] = "Ion Intensity"
     da.attrs["units"] = "a.u."
     return da
@@ -377,8 +381,8 @@ def _determine_chunk_shape(
     also subdivides the spatial axes.
     """
     itemsize = np.dtype(dtype).itemsize
-    y_idx = axes_names.index("y")
-    x_idx = axes_names.index("x")
+    y_idx = axes_names.index("Y")
+    x_idx = axes_names.index("X")
     plane_bytes = int(shape[y_idx]) * int(shape[x_idx]) * itemsize
 
     if plane_bytes <= memory_target:
@@ -409,7 +413,7 @@ def _compute_channel_windows(
     robust to the hot-pixel outliers common in MS imaging, so a couple of
     saturated pixels don't wash out the default display contrast.
     """
-    reduce_dims = [d for d in data.dims if d != "m_z"]
+    reduce_dims = [d for d in data.dims if d != "M_Z"]
     channel_min = data.min(dim=reduce_dims)
     channel_max = data.max(dim=reduce_dims)
 
@@ -443,10 +447,10 @@ def write_ome_zarr(
 ) -> None:
     """Write an MSI DataArray to an OME-Zarr (Zarr v3 / NGFF 0.5) store.
 
-    ``data`` must have ``m_z``, ``y``, ``x`` dims, and may optionally have
-    an ``iteration`` dim (as produced by `deconvolution.deconvolute_dataset`).
-    ``m_z`` is mapped to the OME channel axis and ``iteration`` to the OME
-    time axis.
+    ``data`` must have ``M_Z``, ``Y``, ``X`` dims, and may optionally have
+    an ``ITERATION`` dim (as produced by
+    `deconvolution.deconvolute_dataset`). ``M_Z`` is mapped to the OME
+    channel axis and ``ITERATION`` to the OME time axis.
 
     Only a single resolution level is written (no multiscale pyramid).
 
@@ -461,16 +465,16 @@ def write_ome_zarr(
         raise ValueError(
             f"window_mode must be 'minmax' or 'percentile', got {window_mode!r}"
         )
-    missing = {"m_z", "y", "x"} - set(data.dims)
+    missing = {"M_Z", "Y", "X"} - set(data.dims)
     if missing:
         raise ValueError(f"`data` is missing required dims: {sorted(missing)}")
 
-    has_iteration = "iteration" in data.dims
+    has_iteration = "ITERATION" in data.dims
     original_dims = list(data.dims)
-    dims_order = (("iteration",) if has_iteration else ()) + ("m_z", "y", "x")
+    dims_order = (("ITERATION",) if has_iteration else ()) + ("M_Z", "Y", "X")
     data = data.transpose(*dims_order)
 
-    axes_names = (["t"] if has_iteration else []) + ["c", "y", "x"]
+    axes_names = (["t"] if has_iteration else []) + ["c", "Y", "X"]
     axes_types = (["time"] if has_iteration else []) + ["channel", "space", "space"]
     axes_units = ([None] if has_iteration else []) + [None, "micrometer", "micrometer"]
     physical_pixel_size = ([1.0] if has_iteration else []) + [
@@ -487,14 +491,14 @@ def write_ome_zarr(
             color=colors[i % len(colors)],
             window=windows[i],
         )
-        for i, mz in enumerate(data.m_z.values)
+        for i, mz in enumerate(data.M_Z.values)
     ]
 
     shape = data.shape
     chunk_shape = _determine_chunk_shape(shape, data.dtype, axes_names, chunk_memory_target)
     image_name = str(data.attrs.get("original_file_name") or data.name or "Image")
 
-    coord_dims = ("m_z", "y", "x") + (("iteration",) if has_iteration else ())
+    coord_dims = ("M_Z", "Y", "X") + (("ITERATION",) if has_iteration else ())
     attributes = {
         _METADATA_KEY: {
             "name": data.name,
@@ -532,12 +536,17 @@ def read_ome_zarr(path: Union[str, Path], lazy: bool = True) -> xr.DataArray:
     """Read an MSI DataArray from an OME-Zarr store.
 
     Coordinates are always re-derived from the store's own OME-NGFF
-    metadata, whether or not it was written by `write_ome_zarr`: m_z from
+    metadata, whether or not it was written by `write_ome_zarr`: M_Z from
     the channel labels (parsed as float; falls back to a 0-based index for
-    a non-numeric label), y/x from the physical pixel size and array shape
+    a non-numeric label), Y/X from the physical pixel size and array shape
     (matching `read_imzml_to_xarray`'s ``(arange(n) + 1) * pixel_size``
-    convention), and iteration (if a time axis is present) as a plain
+    convention), and ITERATION (if a time axis is present) as a plain
     0..T-1 index. None of that needs to be duplicated on disk.
+
+    Every dim/coord name comes back uppercase (``M_Z``, ``ITERATION``,
+    ``Y``, ``X``), matching this project's convention throughout (see
+    module docstring) as well as the Reader's native (always uppercased)
+    axis names for Y/X.
 
     What *can't* be re-derived -- the DataArray's name, original dim order,
     and attrs/coord_attrs (e.g. ``tolerance``, ``original_file_name``) --
@@ -556,9 +565,9 @@ def read_ome_zarr(path: Union[str, Path], lazy: bool = True) -> xr.DataArray:
     reader = OMEZarrReader(str(path))
     arr = reader.xarray_dask_data if lazy else reader.xarray_data
 
-    rename = {"C": "m_z", "Y": "y", "X": "x"}
+    rename = {"C": "M_Z"}
     if "T" in arr.dims:
-        rename["T"] = "iteration"
+        rename["T"] = "ITERATION"
     arr = arr.rename(rename)
 
     pixel_sizes = reader.physical_pixel_sizes
@@ -566,15 +575,15 @@ def read_ome_zarr(path: Union[str, Path], lazy: bool = True) -> xr.DataArray:
     pixel_size_y = pixel_sizes.Y if pixel_sizes.Y is not None else 1.0
 
     coords = {
-        "m_z": [
+        "M_Z": [
             _parse_float_or(label, default=i)
             for i, label in enumerate(reader.channel_names)
         ],
-        "y": (np.arange(arr.sizes["y"]) + 1) * pixel_size_y,
-        "x": (np.arange(arr.sizes["x"]) + 1) * pixel_size_x,
+        "Y": (np.arange(arr.sizes["Y"]) + 1) * pixel_size_y,
+        "X": (np.arange(arr.sizes["X"]) + 1) * pixel_size_x,
     }
-    if "iteration" in arr.dims:
-        coords["iteration"] = np.arange(arr.sizes["iteration"])
+    if "ITERATION" in arr.dims:
+        coords["ITERATION"] = np.arange(arr.sizes["ITERATION"])
     arr = arr.assign_coords(coords)
 
     if meta is not None:
@@ -592,9 +601,9 @@ def read_ome_zarr(path: Union[str, Path], lazy: bool = True) -> xr.DataArray:
         "pixel_size_y": float(pixel_size_y),
         "original_file_name": Path(path).name,
     }
-    arr.x.attrs["units"] = "μm"
-    arr.y.attrs["units"] = "μm"
-    arr.m_z.attrs["long_name"] = "m/z"
+    arr.X.attrs["units"] = "μm"
+    arr.Y.attrs["units"] = "μm"
+    arr.M_Z.attrs["long_name"] = "m/z"
     arr.name = arr.name or "ion_intensity"
 
     return arr

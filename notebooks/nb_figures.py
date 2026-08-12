@@ -31,6 +31,7 @@ with app.setup(hide_code=True):
     if str(_root_dir) not in sys.path:
         sys.path.append(str(_root_dir))
 
+    from src.imzml_io import load_dataarray
     from src.plotting import set_hv_backend, decay_curve_group_overlay
 
     set_hv_backend("matplotlib")
@@ -56,8 +57,8 @@ def _():
         "data/decay_curve/SMALDI 5/Cerebellum/DHAP_positive_A43.5/multiple_passes_filtered.h5"
     )
 
-    data_xr = xr.open_dataarray(manual_file).sortby('m_z')
-    intensity_ratios_xr = data_xr / data_xr.sel(m_z=760.5851, method='nearest')
+    data_xr = load_dataarray(manual_file).sortby('M_Z')
+    intensity_ratios_xr = data_xr / data_xr.sel(M_Z=760.5851, method='nearest')
     return (intensity_ratios_xr,)
 
 
@@ -66,13 +67,13 @@ def _(intensity_ratios_xr):
     hv.output(backend='bokeh')
 
     pass_nums = [1, 3, 5, 9]
-    m_z_vals = intensity_ratios_xr.m_z.values
+    m_z_vals = intensity_ratios_xr.M_Z.values
 
     grid = hv.GridSpace(kdims=['m/z', 'Pass'])
 
     for p in pass_nums:
         for mz in m_z_vals:
-            img_data = intensity_ratios_xr.sel(pass_num=p, m_z=mz).values
+            img_data = intensity_ratios_xr.sel(PASS_NUM=p, M_Z=mz).values
 
             img = hv.Image(img_data, kdims=['x', 'y']).opts(colorbar=False, cmap="viridis")
 
@@ -98,12 +99,12 @@ def _():
 @app.cell
 def _():
     # _slice = intensity_ratios_xr.sel(
-    #     m_z=mz_slider.value, iteration=iter_slider.value
+    #     M_Z=mz_slider.value, ITERATION=iter_slider.value
     # )
 
-    # intensity_ratios_xr.sel(pass_num=[1,3,5,9]).hvplot.image(
-    #     x="x",
-    #     y="y",
+    # intensity_ratios_xr.sel(PASS_NUM=[1,3,5,9]).hvplot.image(
+    #     x="X",
+    #     y="Y",
     #     colorbar=True,
     #     cmap="viridis",
     #     data_aspect=1,
@@ -153,11 +154,11 @@ def _():
     tic_passes_xr = xr.DataArray(
         _tic_cube,
         coords={
-            "pass_num": np.arange(1, _n_passes + 1),
-            "y": np.arange(1, _max_y + 1),
-            "x": np.arange(1, _max_x + 1),
+            "PASS_NUM": np.arange(1, _n_passes + 1),
+            "Y": np.arange(1, _max_y + 1),
+            "X": np.arange(1, _max_x + 1),
         },
-        dims=["pass_num", "y", "x"],
+        dims=["PASS_NUM", "Y", "X"],
         name="TIC",
     )
 
@@ -178,18 +179,18 @@ def _():
 
 @app.cell
 def _(tic_passes_xr):
-    _pass_vals = sorted(tic_passes_xr.coords["pass_num"].values.tolist())
+    _pass_vals = sorted(tic_passes_xr.coords["PASS_NUM"].values.tolist())
 
     hv.NdLayout(
         {
             int(p): hv.Image(
-                tic_passes_xr.sel(**{"pass_num": p}),
-                kdims=["x", "y"],
+                tic_passes_xr.sel(**{"PASS_NUM": p}),
+                kdims=["X", "Y"],
                 vdims=["TIC"],
             ).opts(colorbar=False, cmap="viridis", data_aspect=1, width=200)
             for p in _pass_vals
         },
-        kdims=["pass_num"],
+        kdims=["PASS_NUM"],
     ).cols(3)
     return
 
@@ -226,7 +227,7 @@ def _():
     decay_overlay = decay_curve_group_overlay(
         _all,
         group_col="setting",
-        x_col="pass_num",
+        x_col="PASS_NUM",
         y_col="value",
         yerr_col="error",
         colors={"A42": "#1f77b4", "A43.5": "#ff7f0e", "A45": "#2ca02c"},
@@ -276,7 +277,7 @@ def _():
     tissue_overlay = decay_curve_group_overlay(
         _all2,
         group_col="tissue",
-        x_col="pass_num",
+        x_col="PASS_NUM",
         y_col="value",
         yerr_col="error",
         colors={"Cerebellum": "#1f77b4", "Kidney": "#d62728"},
@@ -317,7 +318,7 @@ def _():
     neg_overlay = decay_curve_group_overlay(
         _all_neg,
         group_col="setting",
-        x_col="pass_num",
+        x_col="PASS_NUM",
         y_col="value",
         yerr_col="error",
         colors={"A42": "#1f77b4", "A43.5": "#ff7f0e"},

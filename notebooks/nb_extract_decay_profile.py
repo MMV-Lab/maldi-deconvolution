@@ -147,7 +147,7 @@ def _(imzml_list, path_list):
     passes_xr = xr.concat(
         _pass_arrays,
         dim=xr.DataArray(
-            np.arange(1, n_passes + 1), dims="pass_num", name="pass_num"
+            np.arange(1, n_passes + 1), dims="PASS_NUM", name="PASS_NUM"
         ),
     )
     passes_xr.name = "individual_peak_intensities"
@@ -156,7 +156,7 @@ def _(imzml_list, path_list):
     # MASK GENERATION
     # ==========================================
 
-    pass1 = passes_xr.sel(pass_num=1)
+    pass1 = passes_xr.sel(PASS_NUM=1)
     mz_masks = compute_tissue_mask(pass1)
 
     # ==========================================================================
@@ -232,12 +232,12 @@ def _(stats_ds):
 
     norm_ds = xr.Dataset(
         {
-            "value": stats_ds[value] / stats_ds[value].sel(pass_num=1),
-            "error": stats_ds[error] / stats_ds[value].sel(pass_num=1),
+            "value": stats_ds[value] / stats_ds[value].sel(PASS_NUM=1),
+            "error": stats_ds[error] / stats_ds[value].sel(PASS_NUM=1),
         }
     )
 
-    norm_ds = norm_ds.mean(dim="m_z")
+    norm_ds = norm_ds.mean(dim="M_Z")
 
     show_export_button = True
 
@@ -251,9 +251,9 @@ def _(stats_ds):
 def _(decay_df):
     (
         decay_df.hvplot.errorbars(
-            x="pass_num", y="value", yerr1="error", width=400
+            x="PASS_NUM", y="value", yerr1="error", width=400
         )
-        * decay_df.hvplot.scatter(x="pass_num", y="value", s=800)
+        * decay_df.hvplot.scatter(x="PASS_NUM", y="value", s=800)
     )
     return
 
@@ -295,15 +295,15 @@ def _(decay_df, export_button, passes_xr, path_list):
 @app.cell
 def _(masked_passes, passes_xr):
     (
-        passes_xr.hvplot.image(x="x", y="y", aspect="square", cmap="magma")
-        + masked_passes.hvplot.image(x="x", y="y", aspect="square", cmap="magma")
+        passes_xr.hvplot.image(x="X", y="Y", aspect="square", cmap="magma")
+        + masked_passes.hvplot.image(x="X", y="Y", aspect="square", cmap="magma")
     )
     return
 
 
 @app.cell
 def _(decay_df, n_passes):
-    x_data = decay_df["pass_num"].to_numpy()
+    x_data = decay_df["PASS_NUM"].to_numpy()
     y_data = decay_df["value"].to_numpy()
     y_weights = decay_df["error"].to_numpy()
 
@@ -320,7 +320,7 @@ def _():
 @app.cell
 def _(decay_df, fit_ds):
     error_bars = decay_df.hvplot.errorbars(
-        x="pass_num",
+        x="PASS_NUM",
         y="value",
         yerr1="error",
         color="black",
@@ -329,7 +329,7 @@ def _(decay_df, fit_ds):
     )
 
     scatter_plot = decay_df.hvplot.scatter(
-        x="pass_num",
+        x="PASS_NUM",
         y="value",
         label="Observed (w/ Std Dev)",
         c="black",
@@ -339,8 +339,8 @@ def _(decay_df, fit_ds):
     )
 
 
-    fit_plots = fit_ds.drop_dims("param_idx").hvplot.line(
-        x="x_fit", y="y_fit", by="model", alpha=0.4
+    fit_plots = fit_ds.drop_dims("PARAM_IDX").hvplot.line(
+        x="X_FIT", y="y_fit", by="MODEL", alpha=0.4
     )
 
     # 4. Final Overlay (Order: Scatter * ErrorBars * Fits)

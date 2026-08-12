@@ -22,13 +22,13 @@ def compute_tissue_mask(
     few very bright outlier pixels don't skew the threshold.
     """
     pass1_clipped = pass1.clip(
-        max=pass1.quantile(clip_quantile, dim=["y", "x"], skipna=True)
+        max=pass1.quantile(clip_quantile, dim=["Y", "X"], skipna=True)
     ).drop_vars("quantile")
 
     thresholds = xr.apply_ufunc(
         threshold_li,
         pass1_clipped,
-        input_core_dims=[["y", "x"]],
+        input_core_dims=[["Y", "X"]],
         vectorize=True,
     )
 
@@ -38,11 +38,11 @@ def compute_tissue_mask(
 
 
 def compute_pass_statistics(
-    masked_passes: xr.DataArray, spatial_dims: Sequence[str] = ("y", "x")
+    masked_passes: xr.DataArray, spatial_dims: Sequence[str] = ("Y", "X")
 ) -> xr.Dataset:
     """Per-pass summary statistics (mean, median, spread, ...) over the
-    tissue-masked region, one value per ``pass_num`` (and any other
-    remaining dims, e.g. ``m_z``)."""
+    tissue-masked region, one value per ``PASS_NUM`` (and any other
+    remaining dims, e.g. ``M_Z``)."""
     spatial_dims = list(spatial_dims)
 
     stats_ds = xr.Dataset(
@@ -109,7 +109,7 @@ def fit_decay_models(
     Returns
     -------
     fit_ds : xr.Dataset
-        Fit curves (``y_fit`` over ``x_fit``) and residual metrics (``mse``,
+        Fit curves (``y_fit`` over ``X_FIT``) and residual metrics (``mse``,
         ``chi_sq_red``, ``params``) per model.
     """
     model_definitions = {
@@ -166,26 +166,26 @@ def fit_decay_models(
     fit_ds = xr.Dataset(
         data_vars={
             "y_fit": (
-                ["model", "x_fit"],
+                ["MODEL", "X_FIT"],
                 [results_dict[m]["y_fit"] for m in model_names],
             ),
             "mse": (
-                ["model"],
+                ["MODEL"],
                 [results_dict[m]["weighted_mse"] for m in model_names],
             ),
             "chi_sq_red": (
-                ["model"],
+                ["MODEL"],
                 [results_dict[m]["reduced_chi_sq"] for m in model_names],
             ),
             "params": (
-                ["model", "param_idx"],
+                ["MODEL", "PARAM_IDX"],
                 [results_dict[m]["params"] for m in model_names],
             ),
         },
         coords={
-            "model": model_names,
-            "x_fit": x_fit,
-            "param_idx": np.arange(max_params),
+            "MODEL": model_names,
+            "X_FIT": x_fit,
+            "PARAM_IDX": np.arange(max_params),
         },
         attrs={"description": "Curve fitting results for multiple models"},
     )

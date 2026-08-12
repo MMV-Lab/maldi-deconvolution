@@ -268,9 +268,10 @@ def crop_to_transformed_bbox(
     within `ref_image` after registration.
 
     `transform` maps REF -> MALDI; it is inverted internally to map the
-    MALDI image's corner points into REF physical space. `maldi_image` must
-    have ``x``/``y`` dims and `pixel_size_x`/`pixel_size_y` attrs;
-    `ref_image` must have ``X``/``Y`` coordinate arrays to slice against.
+    MALDI image's corner points into REF physical space. Both `maldi_image`
+    and `ref_image` must have ``X``/``Y`` coordinate arrays to slice
+    against; `maldi_image` must also have `pixel_size_x`/`pixel_size_y`
+    attrs.
     """
     try:
         inverse_transform = transform.GetInverse()
@@ -279,7 +280,7 @@ def crop_to_transformed_bbox(
             "Could not invert the transform to map MALDI coordinates to REF space."
         ) from e
 
-    size_x, size_y = int(maldi_image.sizes["x"]), int(maldi_image.sizes["y"])
+    size_x, size_y = int(maldi_image.sizes["X"]), int(maldi_image.sizes["Y"])
     spacing_x = float(np.asarray(maldi_image.attrs["pixel_size_x"]))
     spacing_y = float(np.asarray(maldi_image.attrs["pixel_size_y"]))
     corners_local = [

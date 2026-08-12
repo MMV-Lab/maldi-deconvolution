@@ -82,12 +82,12 @@ def _(xy_profiles_full):
 
 @app.cell
 def _(xy_profiles):
-    x_coords = xy_profiles.x.values
-    y_coords = xy_profiles.y.values
+    x_coords = xy_profiles.X.values
+    y_coords = xy_profiles.Y.values
     X, Y = np.meshgrid(x_coords, y_coords)
 
-    avg_img = xy_profiles.mean(dim="sample")
-    std_img = xy_profiles.std(dim="sample")
+    avg_img = xy_profiles.mean(dim="SAMPLE")
+    std_img = xy_profiles.std(dim="SAMPLE")
     return X, Y, avg_img, std_img, x_coords, y_coords
 
 
@@ -136,17 +136,17 @@ def _(X, Y, avg_img, global_best_fit, std_img):
     x_center = global_best_fit.x_mean.value
     y_center = global_best_fit.y_mean.value
 
-    idx_x = np.abs(avg_img.x.values - x_center).argmin()
-    idx_y = np.abs(avg_img.y.values - y_center).argmin()
+    idx_x = np.abs(avg_img.X.values - x_center).argmin()
+    idx_y = np.abs(avg_img.Y.values - y_center).argmin()
 
     # Prepare X-profile data (horizontal slice at y_center)
-    x_vals = avg_img.x.values
+    x_vals = avg_img.X.values
     x_data_prof = avg_img.values[idx_y, :]
     x_err_prof = std_img.values[idx_y, :]
     x_fit_prof = global_best_fit(x_vals, y_center)
 
     # Prepare Y-profile data (vertical slice at x_center)
-    y_vals = avg_img.y.values
+    y_vals = avg_img.Y.values
     y_data_prof = avg_img.values[:, idx_x]
     y_err_prof = std_img.values[:, idx_x]
     y_fit_prof = global_best_fit(x_center, y_vals)
@@ -242,8 +242,8 @@ def _(X, Y, avg_img, global_best_fit, std_img):
     _y_center = global_best_fit.y_mean.value
 
     # Original coordinate arrays (needed for indexing / evaluating the fit)
-    _x_vals_orig = avg_img.x.values
-    _y_vals_orig = avg_img.y.values
+    _x_vals_orig = avg_img.X.values
+    _y_vals_orig = avg_img.Y.values
 
     # Index of the slice through the peak
     _idx_x = np.abs(_x_vals_orig - _x_center).argmin()
@@ -318,9 +318,9 @@ def _(X, Y, avg_img, global_best_fit, std_img):
 def _(x_coords, xy_profiles, y_coords):
     fit_results = []
 
-    for _sample_val in xy_profiles.sample.values:
+    for _sample_val in xy_profiles.SAMPLE.values:
         _fit = fit_gaussian2d(
-            x_coords, y_coords, xy_profiles.sel(sample=_sample_val).values
+            x_coords, y_coords, xy_profiles.sel(SAMPLE=_sample_val).values
         )
 
         fit_results.append(

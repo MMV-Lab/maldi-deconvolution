@@ -25,7 +25,7 @@ def _():
     mo.md(r"""
     # Welcome!
 
-    ## This notebook serves the purpose of extracting data from a `imzML` file to a `h5` file which can be processed later (deconvolution or visualization)
+    ## This notebook serves the purpose of extracting data from a `imzML` file to an OME-Zarr (`.ome.zarr`) file which can be processed later (deconvolution or visualization)
     """)
     return
 
@@ -282,8 +282,8 @@ def _(filepath, m_z_values, tolerance):
 @app.cell
 def _(ion_image_xr):
     ion_image_xr.hvplot.image(
-        x="x",
-        y="y",
+        x="X",
+        y="Y",
         aspect="equal",
         data_aspect=ion_image_xr.attrs["pixel_size_y"]
         / ion_image_xr.attrs["pixel_size_x"],
@@ -314,8 +314,8 @@ def _(ion_image_xr):
             | ---: | :--- |
             | $x$ pixel size: | ${_pixel_size_x} \\ μm$  |
             | $y$ pixel size: | ${_pixel_size_y} \\ μm$  |
-            | min m/z : | {ion_image_xr.m_z.values.min()} |
-            | max m/z : | {ion_image_xr.m_z.values.max()} |   
+            | min m/z : | {ion_image_xr.M_Z.values.min()} |
+            | max m/z : | {ion_image_xr.M_Z.values.max()} |
         """
                 ).center(),
             ],
@@ -347,9 +347,12 @@ def _(export_button, filepath, ion_image_xr, is_script_mode):
     with mo.status.spinner(
         title="Saving...", subtitle="This should take 1-2 minutes"
     ) as _spinner:
-        save_dataarray(ion_image_xr, out_dir / f"{filepath.name}_original.h5")
+        save_dataarray(
+            ion_image_xr,
+            out_dir / f"{filepath.name}_original.ome.zarr",
+        )
 
-    mo.md(f"""Saved original `{filepath.name}_original.h5` to:
+    mo.md(f"""Saved original `{filepath.name}_original.ome.zarr` to:
 
     `{out_dir}`
 

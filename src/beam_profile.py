@@ -16,7 +16,7 @@ from astropy.modeling.functional_models import Gaussian2D
 def load_cma_images(
     path_list: Sequence[Union[str, Path]], x_pixel_size: float, y_pixel_size: float
 ) -> xr.DataArray:
-    """Read a set of `.cma` CSV scans into a ``(sample, y, x)`` intensity
+    """Read a set of `.cma` CSV scans into a ``(SAMPLE, Y, X)`` intensity
     stack with physical (µm) coordinates.
 
     Each CSV has a trailing empty column, which is dropped.
@@ -29,11 +29,11 @@ def load_cma_images(
 
     return xr.DataArray(
         stacked_data,
-        dims=["sample", "y", "x"],
+        dims=["SAMPLE", "Y", "X"],
         coords={
-            "sample": np.arange(stacked_data.shape[0]),
-            "y": np.arange(stacked_data.shape[1]) * y_pixel_size,
-            "x": np.arange(stacked_data.shape[2]) * x_pixel_size,
+            "SAMPLE": np.arange(stacked_data.shape[0]),
+            "Y": np.arange(stacked_data.shape[1]) * y_pixel_size,
+            "X": np.arange(stacked_data.shape[2]) * x_pixel_size,
         },
         name="intensity",
         attrs={"units": "um"},
@@ -41,16 +41,16 @@ def load_cma_images(
 
 
 def crop_around_peak(xy_profiles: xr.DataArray, window: int = 20) -> xr.DataArray:
-    """Crop a ``(sample, y, x)`` stack to a ``window`` x ``window`` box
+    """Crop a ``(SAMPLE, Y, X)`` stack to a ``window`` x ``window`` box
     centered on the sample-averaged peak position."""
-    max_pos = xy_profiles.mean(dim="sample").argmax(dim=["y", "x"])
+    max_pos = xy_profiles.mean(dim="SAMPLE").argmax(dim=["Y", "X"])
     half = window // 2
-    y_mid = int(max_pos["y"])
-    x_mid = int(max_pos["x"])
+    y_mid = int(max_pos["Y"])
+    x_mid = int(max_pos["X"])
 
     return xy_profiles.isel(
-        y=slice(y_mid - half, y_mid + half),
-        x=slice(x_mid - half, x_mid + half),
+        Y=slice(y_mid - half, y_mid + half),
+        X=slice(x_mid - half, x_mid + half),
     )
 
 

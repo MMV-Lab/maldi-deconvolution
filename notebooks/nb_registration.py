@@ -77,8 +77,8 @@ def _():
     )
     maldi_select_widget = mo.ui.file_browser(
         multiple=False,
-        selection_mode="file",
-        filetypes=[".h5"],
+        selection_mode="all",
+        filetypes=[".h5", ".ome.zarr"],
     )
 
     mo.hstack(
@@ -94,7 +94,7 @@ def _():
             mo.vstack(
                 [
                     mo.md(
-                        "# Select the **h5** file containing the **deconvolved MALDI** data:"
+                        "# Select the **h5** or **ome.zarr** data containing the **deconvolved MALDI** data:"
                     ),
                     maldi_select_widget,
                 ]
@@ -117,8 +117,8 @@ def _(maldi_select_widget, ref_select_widget):
     deconv_image_path = maldi_select_widget.value[0].path
     deconv_image = load_dataarray(deconv_image_path, lazy=False)
 
-    _mz = deconv_image.m_z.values.tolist()
-    _iter = deconv_image.iteration.values.tolist()
+    _mz = deconv_image.M_Z.values.tolist()
+    _iter = deconv_image.ITERATION.values.tolist()
 
     # Modality detection
     REF_image_raw = REF_image.xarray_data.squeeze(drop=True)
@@ -284,9 +284,9 @@ def _(
 
     # Create xarray for registration (used during landmark-based registration)
     MALDI_image_registration_xr = deconv_image.sel(
-        iteration=MALDI_iteration_registration,
-        m_z=MALDI_m_z_registration,
-    ).rename({"y": "Y", "x": "X"})
+        ITERATION=MALDI_iteration_registration,
+        M_Z=MALDI_m_z_registration,
+    )
 
     MALDI_image_registration_xr.hvplot.image(
         x="X",
@@ -829,8 +829,8 @@ def _(
     if _n_mz > 0 and _n_iter > 0:
         # Get Y, X dimensions from first registration
         _first_maldi = _deconv_image.sel(
-            iteration=MALDI_iterations_transform[0], m_z=MALDI_m_z_transform[0]
-        ).rename({"y": "Y", "x": "X"})
+            ITERATION=MALDI_iterations_transform[0], M_Z=MALDI_m_z_transform[0]
+        )
         _first_registered = register_MALDI(_first_maldi)
         _y_size, _x_size = _first_registered.shape
 
@@ -847,17 +847,17 @@ def _(
                     _all_arrays[i_mz, i_iter, :, :] = _first_registered
                 else:
                     _MALDI_raw = _deconv_image.sel(
-                        iteration=_iter, m_z=_mz
-                    ).rename({"y": "Y", "x": "X"})
+                        ITERATION=_iter, M_Z=_mz
+                    )
                     _registered_arr = register_MALDI(_MALDI_raw)
                     _all_arrays[i_mz, i_iter, :, :] = _registered_arr
 
         MALDI_image_transformed_xr = xr.DataArray(
             _all_arrays,
-            dims=["m_z", "iteration", "Y", "X"],
+            dims=["M_Z", "ITERATION", "Y", "X"],
             coords={
-                "m_z": MALDI_m_z_transform,
-                "iteration": MALDI_iterations_transform,
+                "M_Z": MALDI_m_z_transform,
+                "ITERATION": MALDI_iterations_transform,
                 "Y": REF_image_xr.coords["Y"],
                 "X": REF_image_xr.coords["X"],
             },
@@ -909,7 +909,7 @@ def _(
         save_dataarray(
             MALDI_image_transformed_xr,
             deconv_image_path.parent
-            / f"{deconv_image_path.name}_deconvolved_registered_m_z-{MALDI_m_z_registration}.h5",
+            / f"{deconv_image_path.name}_deconvolved_registered_m_z-{MALDI_m_z_registration}.ome.zarr",
         )
 
         _output = REF_image_raw.copy()
@@ -921,11 +921,11 @@ def _(
         )
 
         if is_fluorescence:
-            _output = _output.rename({"C": "m_z"})
+            _output = _output.rename({"C": "M_Z"})
         if is_rgb:
-            _output = _output.rename({"S": "m_z"})
+            _output = _output.rename({"S": "M_Z"})
 
-        _output = _output.assign_coords(m_z=np.arange(len(_output.m_z)))
+        _output = _output.assign_coords(M_Z=np.arange(len(_output.M_Z)))
 
         _output = _output.assign_attrs(
             {
@@ -939,7 +939,7 @@ def _(
         save_dataarray(
             _output,
             deconv_image_path.parent
-            / f"{deconv_image_path.name}_REFERENCE_registered.h5",
+            / f"{deconv_image_path.name}_REFERENCE_registered.ome.zarr",
         )
     return
 
@@ -961,16 +961,16 @@ def _(
 
     cmap_dict = build_colormap_dict(colormap_names=[])
 
-    if MALDI_m_z_registration in MALDI_image_transformed_xr.m_z.values:
+    if MALDI_m_z_registration in MALDI_image_transformed_xr.M_Z.values:
         _MALDI_for_overlay = MALDI_image_transformed_xr.sel(
-            m_z=MALDI_m_z_registration
+            M_Z=MALDI_m_z_registration
         )
     else:
         # Fallback to first m/z if registration m/z not in transform selection
-        _MALDI_for_overlay = MALDI_image_transformed_xr.isel(m_z=0)
+        _MALDI_for_overlay = MALDI_image_transformed_xr.isel(M_Z=0)
 
     # Select last iteration to show final deconvolved result
-    _MALDI_for_overlay = _MALDI_for_overlay.isel(iteration=-1)
+    _MALDI_for_overlay = _MALDI_for_overlay.isel(ITERATION=-1)
 
     _vmax = float(_MALDI_for_overlay.quantile(0.99))
 
@@ -1231,22 +1231,22 @@ def _(REF_image_transformed_xr, REF_pixel_um, REF_poly_stream, is_rgb):
 def _(MALDI_image_transformed_xr, mask_xr):
     # Get the first m/z and first two iterations for comparison
     if MALDI_image_transformed_xr is not None:
-        _first_mz = MALDI_image_transformed_xr.m_z.values[0]
-        _iterations = MALDI_image_transformed_xr.iteration.values
+        _first_mz = MALDI_image_transformed_xr.M_Z.values[0]
+        _iterations = MALDI_image_transformed_xr.ITERATION.values
 
         if len(_iterations) >= 2:
             MALDI_transform_0 = MALDI_image_transformed_xr.sel(
-                m_z=_first_mz, iteration=_iterations[0]
+                M_Z=_first_mz, ITERATION=_iterations[0]
             )
             MALDI_transform_1 = MALDI_image_transformed_xr.sel(
-                m_z=_first_mz, iteration=_iterations[1]
+                M_Z=_first_mz, ITERATION=_iterations[1]
             )
         elif len(_iterations) == 1:
             MALDI_transform_0 = MALDI_image_transformed_xr.sel(
-                m_z=_first_mz, iteration=_iterations[0]
+                M_Z=_first_mz, ITERATION=_iterations[0]
             )
             MALDI_transform_1 = MALDI_image_transformed_xr.sel(
-                m_z=_first_mz, iteration=_iterations[0]
+                M_Z=_first_mz, ITERATION=_iterations[0]
             )
         else:
             MALDI_transform_0 = None
