@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.14"
+__generated_with = "0.23.16"
 app = marimo.App(width="full")
 
 with app.setup:
@@ -62,7 +62,11 @@ with app.setup:
         lsf_fwhm,
     )
     from src.visualization import build_colormap_dict
-    from src.imzml_io import load_dataarray, save_dataarray
+    from src.imzml_io import (
+        DATAARRAY_EXTENSIONS,
+        load_dataarray,
+        save_dataarray,
+    )
     from src.plotting import set_hv_backend
 
     set_hv_backend("bokeh", fig_format=None)
@@ -78,7 +82,7 @@ def _():
     maldi_select_widget = mo.ui.file_browser(
         multiple=False,
         selection_mode="all",
-        filetypes=[".h5", ".ome.zarr"],
+        filetypes=DATAARRAY_EXTENSIONS,
     )
 
     mo.hstack(
@@ -109,10 +113,26 @@ def _(maldi_select_widget, ref_select_widget):
     REF_image_path = ref_select_widget.value[0].path
     REF_image = BioImage(REF_image_path)
 
-    if REF_image.physical_pixel_sizes.X == REF_image.physical_pixel_sizes.Y:
-        _tmp_pixel_size = str(REF_image.physical_pixel_sizes.X)
+    try:
+        _x_size = REF_image.physical_pixel_sizes.X
+        _y_size = REF_image.physical_pixel_sizes.Y
 
-    REF_pixel_size_text = mo.ui.text(value=_tmp_pixel_size)
+        if _x_size is not None and _y_size is not None:
+            if _x_size == _y_size:
+                _tmp_pixel_size = str(_x_size)
+            else:
+                # If both exist but are different, take the average
+                _tmp_pixel_size = str((_x_size + _y_size) / 2)
+        else:
+            # Fallback if sizes are None
+            _tmp_pixel_size = str(_x_size or _y_size or "")
+    except (AttributeError, TypeError):
+        # Fallback if physical_pixel_sizes doesn't exist or isn't accessible
+        _tmp_pixel_size = ""
+
+    REF_pixel_size_text = mo.ui.text(
+        value=_tmp_pixel_size if _tmp_pixel_size else None
+    )
 
     deconv_image_path = maldi_select_widget.value[0].path
     deconv_image = load_dataarray(deconv_image_path, lazy=False)
@@ -212,6 +232,8 @@ def _(
     REF_pixel_um = float(REF_pixel_size_text.value)
 
     REF_image_xr = REF_image_raw.copy()
+
+    REF_image_xr = REF_image_xr.astype(REF_image_raw.dtype.newbyteorder("<"), casting="equiv")
 
     # Process based on modality
     if is_fluorescence:
@@ -374,6 +396,7 @@ def _(MALDI_image_registration_xr, REF_image_xr, is_rgb):
 
     _vmax = float(MALDI_image_registration_xr.quantile(0.98))
 
+
     # Invisible-until-drawn Points elements — required by PointDraw as Bokeh renderer source
     _REF_pts = hv.Points([]).opts(
         size=10,
@@ -411,18 +434,20 @@ def _(MALDI_image_registration_xr, REF_image_xr, is_rgb):
             hover=False,
         )
     else:
+        _REF_vmax = float(REF_image_xr.quantile(0.99))
         _REF_base = REF_image_xr.hvplot.image(
             x="X",
             y="Y",
             data_aspect=1,
             flip_yaxis=True,
+            clim=(0, _REF_vmax),
             rasterize=True,
             cmap="viridis",
             title="Reference Image (Fluorescence)",
             width=650,
             height=550,
             hover=False,
-            robust=True,
+            # robust=True,
             colorbar=False,
         )
 
@@ -448,25 +473,10 @@ def _(MALDI_image_registration_xr, REF_image_xr, is_rgb):
     ).opts(active_tools=["pan", "wheel_zoom"])
 
     landmark_selection_plot = (_REF_combined + _MALDI_combined).opts(
-        shared_axes=False
+        shared_axes=False, framewise=True
     )
     landmark_selection_plot
     return MALDI_lm_stream, REF_lm_stream
-
-
-@app.cell
-def _():
-    register_btn = mo.ui.run_button(label="Run Registration")
-    mo.vstack(
-        [
-            mo.md(
-                "Select **≥ 3 corresponding landmarks** in both images above "
-                "(click to add, drag to move, Backspace to delete), then:"
-            ),
-            register_btn,
-        ]
-    )
-    return (register_btn,)
 
 
 @app.cell
@@ -656,7 +666,7 @@ def _():
 
 @app.cell
 def _(MALDI_lm_stream, REF_lm_stream):
-    # # HOECHST DATASET
+    # # HOECHST DATASET 
 
     REF_lm_stream.event(
         data={
@@ -710,9 +720,194 @@ def _(MALDI_lm_stream, REF_lm_stream):
 
 
 @app.cell
+def _():
+    # A375 - CC296
+
+    # [
+    #   {
+    #     "x": [
+    #       210.09920057812775,
+    #       210.09920057812775,
+    #       378.6519144743002,
+    #       487.96092013710194,
+    #       436.2268728297185,
+    #       389.49939346197175,
+    #       406.18778349767814,
+    #       420.3728895635663,
+    #       327.7523375976268,
+    #       278.5215742600617,
+    #       109.96886036388922,
+    #       146.6832993440966
+    #     ],
+    #     "y": [
+    #       127.86865956424657,
+    #       145.93904376967154,
+    #       115.82171487710761,
+    #       158.8464704379132,
+    #       202.731740805105,
+    #       235.43054846626057,
+    #       217.36013143555215,
+    #       237.1515452537495,
+    #       246.61697834701334,
+    #       184.66132377439658,
+    #       157.12547365042428,
+    #       186.3823205618855
+    #     ]
+    #   },
+    #   {
+    #     "x": [
+    #       237.3166666666667,
+    #       240.34606933593753,
+    #       403.93000000000006,
+    #       515.257976888021,
+    #       466.0313102213542,
+    #       421.3486897786459,
+    #       436.49535644531255,
+    #       448.6127360026042,
+    #       357.7327360026042,
+    #       308.5060693359375,
+    #       138.86333333333334,
+    #       176.73000000000002
+    #     ],
+    #     "y": [
+    #       139.48447321891786,
+    #       157.44746726036072,
+    #       121.52147917747497,
+    #       164.47647917747497,
+    #       208.2124672603607,
+    #       241.79546130180358,
+    #       224.6134851360321,
+    #       244.1384851360321,
+    #       255.07246726036072,
+    #       196.4974672603607,
+    #       167.6004613018036,
+    #       197.27848513603212
+    #     ]
+    #   }
+    # ]
+
+
+    # [
+    #   {
+    #     "x": [
+    #       406.8515037824614,
+    #       327.80836641044965,
+    #       437.5106455877838,
+    #       420.02535848827347,
+    #       486.36038196970094,
+    #       282.59812149449766,
+    #       271.513424000103
+    #     ],
+    #     "y": [
+    #       217.8304705306969,
+    #       245.74258272677628,
+    #       200.53978622931862,
+    #       238.5792954614209,
+    #       161.07997557660582,
+    #       192.34728737721605,
+    #       176.20933075296574
+    #     ]
+    #   },
+    #   {
+    #     "x": [
+    #       435.2919012005341,
+    #       356.7682293609076,
+    #       464.81435418943994,
+    #       447.4661124488194,
+    #       513.782804795097,
+    #       315.117654886347,
+    #       304.5923077164577
+    #     ],
+    #     "y": [
+    #       223.788330792473,
+    #       255.48881878843014,
+    #       207.1533909025014,
+    #       244.8173569518841,
+    #       165.81700104352674,
+    #       205.1635537475609,
+    #       187.52545194597164
+    #     ]
+    #   }
+    # ]
+    return
+
+
+@app.cell
+def _():
+    ## H9c2 - CC307-1
+
+    # [
+    #   {
+    #     "x": [
+    #       1766.1461179791393,
+    #       1824.3983804979578,
+    #       1754.8714482052824,
+    #       1655.0103448219231,
+    #       1586.0202918134164,
+    #       1975.0395431066468,
+    #       1981.3729586821592,
+    #       1783.1478121940893,
+    #       1919.9123925417257
+    #     ],
+    #     "y": [
+    #       1690.1330947802514,
+    #       1693.4209955217468,
+    #       1629.5805491315177,
+    #       1616.9768616843562,
+    #       1604.647163352649,
+    #       1547.7193682279994,
+    #       1555.2919024102544,
+    #       1537.2938504342046,
+    #       1652.8983058526856
+    #     ]
+    #   },
+    #   {
+    #     "x": [
+    #       223.61091189281623,
+    #       280.20209478781334,
+    #       213.6750410132732,
+    #       117.77242773830179,
+    #       54.26935042899804,
+    #       437.5241210377668,
+    #       444.5589398043084,
+    #       249.8022407937403,
+    #       375.26488406372334
+    #     ],
+    #     "y": [
+    #       168.76872655722195,
+    #       173.6691580714525,
+    #       109.9635738778049,
+    #       95.26227933511329,
+    #       80.56099328953815,
+    #       35.27980769790463,
+    #       42.33836646466419,
+    #       18.8876369235521,
+    #       134.03347484881166
+    #     ]
+    #   }
+    # ]
+    return
+
+
+@app.cell
 def _(MALDI_lm_stream, REF_lm_stream):
     (REF_lm_stream.data, MALDI_lm_stream.data)
     return
+
+
+@app.cell
+def _():
+    register_btn = mo.ui.run_button(label="Run Registration")
+    mo.vstack(
+        [
+            mo.md(
+                "Select **≥ 3 corresponding landmarks** in both images above "
+                "(click to add, drag to move, Backspace to delete), then:"
+            ),
+            register_btn,
+        ]
+    )
+    return (register_btn,)
 
 
 @app.cell
@@ -743,7 +938,9 @@ def _(
     # Reference image → grayscale float32 for registration metric
     if is_rgb and "S" in REF_image_xr.dims:
         # RGB: convert to grayscale using luminosity method
-        _REF_gray = rgb_to_grayscale(REF_image_xr, method="luminosity").values.astype(np.float32)
+        _REF_gray = rgb_to_grayscale(
+            REF_image_xr, method="luminosity"
+        ).values.astype(np.float32)
     else:
         # Fluorescence or grayscale: use directly
         _REF_gray = REF_image_xr.values.astype(np.float32)
@@ -754,8 +951,8 @@ def _(
     MALDI_sitk = build_sitk_image(
         MALDI_image_registration_xr.values,
         (
-            MALDI_image_registration_xr.attrs["pixel_size_x"].item(),
-            MALDI_image_registration_xr.attrs["pixel_size_y"].item(),
+            MALDI_image_registration_xr.attrs["pixel_size_x"],
+            MALDI_image_registration_xr.attrs["pixel_size_y"],
         ),
     )
 
@@ -821,7 +1018,9 @@ def _(
     _deconv_image = load_dataarray(deconv_image_path, lazy=False)
 
     def register_MALDI(MALDI_raw):
-        return apply_transform_resample(MALDI_raw, REF_sitk, REF_MALDI_transform)
+        return apply_transform_resample(
+            MALDI_raw, REF_sitk, REF_MALDI_transform
+        )
 
     _n_mz = len(MALDI_m_z_transform)
     _n_iter = len(MALDI_iterations_transform)
@@ -846,9 +1045,7 @@ def _(
                     # We already registered the first one
                     _all_arrays[i_mz, i_iter, :, :] = _first_registered
                 else:
-                    _MALDI_raw = _deconv_image.sel(
-                        ITERATION=_iter, M_Z=_mz
-                    )
+                    _MALDI_raw = _deconv_image.sel(ITERATION=_iter, M_Z=_mz)
                     _registered_arr = register_MALDI(_MALDI_raw)
                     _all_arrays[i_mz, i_iter, :, :] = _registered_arr
 
@@ -989,7 +1186,9 @@ def _(
             alpha=0.8,
         )
 
-        _REF_gray = rgb_to_grayscale(REF_image_transformed_xr, method="mean").hvplot.image(
+        _REF_gray = rgb_to_grayscale(
+            REF_image_transformed_xr, method="mean"
+        ).hvplot.image(
             x="X",
             y="Y",
             data_aspect=1,
@@ -1198,7 +1397,9 @@ def _(REF_image_transformed_xr, REF_pixel_um, REF_poly_stream, is_rgb):
             _pts_px = (
                 _pts_physical - np.array([_x_min, _y_min])
             ) / REF_pixel_um
-            roi_centers.append((np.mean(_pts_px[:, 0]), np.mean(_pts_px[:, 1])))
+            roi_centers.append(
+                (np.mean(_pts_px[:, 0]), np.mean(_pts_px[:, 1]))
+            )
 
     # Visualization
     _mask_plot = mask_xr.hvplot.image(
@@ -1505,14 +1706,18 @@ def _(
         boundary_f1_0,
         mean_surface_distance_um_0,
         hausdorff95_um_0,
-    ) = compute_boundary_metrics(MALDI_transform_0, best_threshold_0, _gt_mask, REF_pixel_um)
+    ) = compute_boundary_metrics(
+        MALDI_transform_0, best_threshold_0, _gt_mask, REF_pixel_um
+    )
     (
         boundary_precision_6,
         boundary_recall_6,
         boundary_f1_6,
         mean_surface_distance_um_6,
         hausdorff95_um_6,
-    ) = compute_boundary_metrics(MALDI_transform_1, best_threshold_6, _gt_mask, REF_pixel_um)
+    ) = compute_boundary_metrics(
+        MALDI_transform_1, best_threshold_6, _gt_mask, REF_pixel_um
+    )
     return (
         boundary_f1_0,
         boundary_f1_6,
@@ -1527,7 +1732,10 @@ def _(
 def _(MALDI_transform_0, MALDI_transform_1, REF_pixel_um, mask_xr):
     _profile = radial_intensity_profile(
         mask_xr.values,
-        {"Iteration_0": MALDI_transform_0.values, "Iteration_6": MALDI_transform_1.values},
+        {
+            "Iteration_0": MALDI_transform_0.values,
+            "Iteration_6": MALDI_transform_1.values,
+        },
         pixel_size=REF_pixel_um,
     )
 
@@ -1638,10 +1846,22 @@ def _(
         _p_0 = _profile["patch_0_mean"].to_numpy()
         _p_6 = _profile["patch_6_mean"].to_numpy()
 
-        _high_0, _low_0 = edge_rise_width(_dist_centers_px, _p_0, normalize="self")
-        _high_6, _low_6 = edge_rise_width(_dist_centers_px, _p_6, normalize="self")
-        _w0 = _low_0 - _high_0 if _high_0 is not None and _low_0 is not None else None
-        _w6 = _low_6 - _high_6 if _high_6 is not None and _low_6 is not None else None
+        _high_0, _low_0 = edge_rise_width(
+            _dist_centers_px, _p_0, normalize="self"
+        )
+        _high_6, _low_6 = edge_rise_width(
+            _dist_centers_px, _p_6, normalize="self"
+        )
+        _w0 = (
+            _low_0 - _high_0
+            if _high_0 is not None and _low_0 is not None
+            else None
+        )
+        _w6 = (
+            _low_6 - _high_6
+            if _high_6 is not None and _low_6 is not None
+            else None
+        )
         if _w0 is not None and _w0 >= 0:
             widths_0.append(_w0 * REF_pixel_um)
         if _w6 is not None and _w6 >= 0:
@@ -1689,7 +1909,9 @@ def _(
                 _patch_0_xr.coords["Y"].values,
             ).values
 
-            _append_roi_metrics(_crop_mask, _patch_0_xr.values, _patch_6_xr.values)
+            _append_roi_metrics(
+                _crop_mask, _patch_0_xr.values, _patch_6_xr.values
+            )
     else:
         _labeled_mask, _n_components = label(mask_xr.values > 0)
         _component_slices = find_objects(_labeled_mask)

@@ -219,7 +219,10 @@ def _():
 
     _curves = []
     for _label, _path in _settings.items():
-        _df = pl.read_csv(_path).with_columns(pl.lit(_label).alias("setting"))
+        _df = pl.read_csv(_path)
+        if "pass_num" in _df.columns:
+            _df = _df.rename({"pass_num": "PASS_NUM"})
+        _df = _df.with_columns(pl.lit(_label).alias("setting"))
         _curves.append(_df)
 
     _all = pl.concat(_curves).to_pandas()
@@ -269,7 +272,10 @@ def _():
 
     _curves2 = []
     for _label, _path in _tissues.items():
-        _df = pl.read_csv(_path).with_columns(pl.lit(_label).alias("tissue"))
+        _df = pl.read_csv(_path)
+        if "pass_num" in _df.columns:
+            _df = _df.rename({"pass_num": "PASS_NUM"})
+        _df = _df.with_columns(pl.lit(_label).alias("tissue"))
         _curves2.append(_df)
 
     _all2 = pl.concat(_curves2).to_pandas()
@@ -310,7 +316,10 @@ def _():
 
     _curves_neg = []
     for _label, _path in _neg_settings.items():
-        _df = pl.read_csv(_path).with_columns(pl.lit(_label).alias("setting"))
+        _df = pl.read_csv(_path)
+        if "pass_num" in _df.columns:
+            _df = _df.rename({"pass_num": "PASS_NUM"})
+        _df = _df.with_columns(pl.lit(_label).alias("setting"))
         _curves_neg.append(_df)
 
     _all_neg = pl.concat(_curves_neg).to_pandas()

@@ -109,7 +109,7 @@ def compute_metrics(
     """
 
     # Clip per-channel outliers so saturated pixels don't corrupt gradient /
-    # range metrics.  clip() broadcasts correctly over m_z.
+    # range metrics.  clip() broadcasts correctly over M_Z.
     if outlier_clip_pct is not None:
         clip_vals = da_3d.quantile(outlier_clip_pct, dim=["Y", "X"]).drop_vars(
             "quantile"
@@ -404,7 +404,7 @@ def _(metrics_df):
     # Median across all m/z channels – single-row summary per method
     metrics_summary_df = (
         metrics_df.group_by("label")
-        .agg(pl.selectors.numeric().exclude("m_z").mean())
+        .agg(pl.selectors.numeric().exclude("M_Z").mean())
         .sort("label")
     )
     metrics_summary_df
@@ -439,7 +439,7 @@ def _(comparison_df):
 def _(comparison_df):
     # Median summary of comparison metrics across top-N m/z channels
     comparison_summary_df = comparison_df.select(
-        pl.selectors.numeric().exclude("m_z").median()
+        pl.selectors.numeric().exclude("M_Z").median()
     )
     comparison_summary_df
     return
@@ -1188,7 +1188,7 @@ def _(residual_df):
 def _(residual_df):
     # Mean summary across m/z channels
     residual_summary_df = residual_df.select(
-        pl.selectors.numeric().exclude("m_z").mean()
+        pl.selectors.numeric().exclude("M_Z").mean()
     )
     residual_summary_df
     return

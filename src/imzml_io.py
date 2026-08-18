@@ -255,16 +255,41 @@ def parse_mz_csv(source: Union[str, Path, bytes]) -> List[float]:
 # OME-Zarr based on `path`'s extension, so call sites don't need to care
 # which backend actually wrote a given file.
 
+# The two concrete extensions save_dataarray/load_dataarray accept, for
+# notebooks to pass straight to `mo.ui.file_browser(filetypes=...)` instead
+# of each hardcoding this list separately.
+DATAARRAY_EXTENSIONS = [".h5", ".ome.zarr"]
+
 
 def _is_zarr_path(path: Union[str, Path]) -> bool:
     suffixes = Path(path).suffixes
     return suffixes[-1:] == [".zarr"]
 
 
+def _uppercase_dims(obj):
+    """Rename any dim (DataArray) or dim/data-var (Dataset) that isn't
+    already uppercase to its uppercase form -- bridges on-disk data written
+    before this project's all-uppercase dim/coord convention (``M_Z``,
+    ``ITERATION``, ``Y``, ``X``, and per-module dims like ``PASS_NUM``) was
+    adopted, so callers never need to care which convention a given file
+    predates.
+    """
+    rename = {d: d.upper() for d in obj.dims if d != d.upper()}
+    return obj.rename(rename) if rename else obj
+
+
+def _require_msi_dims(data: xr.DataArray) -> None:
+    missing = {"M_Z", "Y", "X"} - set(data.dims)
+    if missing:
+        raise ValueError(f"`data` is missing required dims: {sorted(missing)}")
+
+
 def save_dataarray(data: xr.DataArray, path: Union[str, Path]) -> None:
     """Persist a DataArray to disk: OME-Zarr (via `write_ome_zarr`) if
     `path` ends in `.zarr`/`.ome.zarr`, else netCDF/HDF5 (`.h5` filenames
-    throughout this project)."""
+    throughout this project). Requires ``M_Z``/``Y``/``X`` dims on both
+    backends (see `write_ome_zarr`)."""
+    _require_msi_dims(data)
     if _is_zarr_path(path):
         write_ome_zarr(data, path)
     else:
@@ -274,6 +299,11 @@ def save_dataarray(data: xr.DataArray, path: Union[str, Path]) -> None:
 def load_dataarray(path: Union[str, Path], lazy: bool = True) -> xr.DataArray:
     """Load a single-variable DataArray previously written by
     `save_dataarray`.
+
+    Always returns the project's all-uppercase dim/coord convention,
+    matching `read_ome_zarr`: any dim written before that convention was
+    adopted is uppercased on the way in (see `_uppercase_dims`), so callers
+    never need to care which convention a given `.h5` file predates.
 
     lazy:
         True (default) -- keeps the array disk/dask-backed until computed
@@ -286,14 +316,15 @@ def load_dataarray(path: Union[str, Path], lazy: bool = True) -> xr.DataArray:
     """
     if _is_zarr_path(path):
         return read_ome_zarr(path, lazy=lazy)
-    return xr.open_dataarray(path) if lazy else xr.load_dataarray(path)
+    arr = xr.open_dataarray(path) if lazy else xr.load_dataarray(path)
+    return _uppercase_dims(arr)
 
 
 def save_dataset(data: xr.Dataset, path: Union[str, Path]) -> None:
     """Persist a Dataset to disk (always netCDF/HDF5).
 
     OME-Zarr support is scoped to single MSI DataArrays (see
-    `write_ome_zarr`'s m_z -> channel / iteration -> time mapping); this
+    `write_ome_zarr`'s M_Z -> channel / ITERATION -> time mapping); this
     project's Datasets (e.g. the PSF simulation grids from
     `MaldiPSFGenerator.to_xarray`) don't have that shape, so `.zarr`/
     `.ome.zarr` paths raise rather than silently writing netCDF under a
@@ -309,19 +340,20 @@ def save_dataset(data: xr.Dataset, path: Union[str, Path]) -> None:
 
 def load_dataset(path: Union[str, Path], lazy: bool = True) -> xr.Dataset:
     """Load a multi-variable Dataset previously written by `save_dataset`
-    (see `load_dataarray` for the `lazy` flag)."""
+    (see `load_dataarray` for the `lazy` flag and legacy-dim bridging)."""
     if _is_zarr_path(path):
         raise NotImplementedError(
             "OME-Zarr is only supported for MSI DataArrays (see load_dataarray); "
             f"got a Dataset source at {path}."
         )
-    return xr.open_dataset(path) if lazy else xr.load_dataset(path)
+    data = xr.open_dataset(path) if lazy else xr.load_dataset(path)
+    return _uppercase_dims(data)
 
 
 # --- OME-Zarr backing for save_dataarray/load_dataarray -----------------
 #
-# Maps this project's MSI DataArray convention onto OME-NGFF axes: m_z ->
-# channel axis, iteration (if present) -> time axis, y/x -> space. Always
+# Maps this project's MSI DataArray convention onto OME-NGFF axes: M_Z ->
+# channel axis, ITERATION (if present) -> time axis, Y/X -> space. Always
 # writes Zarr v3 (NGFF 0.5) and a single resolution level (no multiscale
 # pyramid) -- this is a data-interchange format for this project's own
 # reader, not a file meant for external NGFF viewers, so the extra
@@ -331,7 +363,7 @@ def load_dataset(path: Union[str, Path], lazy: bool = True) -> xr.Dataset:
 # `write_ome_zarr` (via OMEZarrWriter's `attributes=` param, merged straight
 # into the root group's attrs alongside "ome"): the DataArray's name,
 # original dim order, and attrs/coord_attrs. Coordinate *values*
-# (m_z/y/x/iteration) aren't stored here -- they're cheaply re-derived on
+# (M_Z/Y/X/ITERATION) aren't stored here -- they're cheaply re-derived on
 # read from the store's own OME-NGFF metadata (channel labels, physical
 # pixel size, array shape), same as for a foreign store.
 _METADATA_KEY = "maldi_msi"
@@ -373,7 +405,7 @@ def _determine_chunk_shape(
     point) random access.
 
     If a full XY plane fits under ``memory_target``, chunk by channel (and
-    by time point, if present): each chunk is exactly one ``(y, x)`` image,
+    by time point, if present): each chunk is exactly one ``(Y, X)`` image,
     matching how the data is actually consumed downstream (picking one m/z
     at one iteration at a time in the visualize notebook). Otherwise the
     plane itself is too big to chunk that finely, so defer to
@@ -402,7 +434,7 @@ def _compute_channel_windows(
     percentiles: Tuple[float, float],
 ) -> List[Dict[str, float]]:
     """Per-channel OMERO ``window`` (contrast limits) for the channel
-    metadata, one dict per m_z value.
+    metadata, one dict per M_Z value.
 
     "minmax" (default): min/max *and* start/end are all the channel's
     actual data extrema -- a sane default now that pixel values are
@@ -465,9 +497,7 @@ def write_ome_zarr(
         raise ValueError(
             f"window_mode must be 'minmax' or 'percentile', got {window_mode!r}"
         )
-    missing = {"M_Z", "Y", "X"} - set(data.dims)
-    if missing:
-        raise ValueError(f"`data` is missing required dims: {sorted(missing)}")
+    _require_msi_dims(data)
 
     has_iteration = "ITERATION" in data.dims
     original_dims = list(data.dims)
@@ -565,10 +595,12 @@ def read_ome_zarr(path: Union[str, Path], lazy: bool = True) -> xr.DataArray:
     reader = OMEZarrReader(str(path))
     arr = reader.xarray_dask_data if lazy else reader.xarray_data
 
-    rename = {"C": "M_Z"}
+    rename = {}
+    if "C" in arr.dims:
+        rename["C"] = "M_Z"
     if "T" in arr.dims:
         rename["T"] = "ITERATION"
-    arr = arr.rename(rename)
+    arr = arr.rename(rename) if rename else arr
 
     pixel_sizes = reader.physical_pixel_sizes
     pixel_size_x = pixel_sizes.X if pixel_sizes.X is not None else 1.0
@@ -587,11 +619,16 @@ def read_ome_zarr(path: Union[str, Path], lazy: bool = True) -> xr.DataArray:
     arr = arr.assign_coords(coords)
 
     if meta is not None:
-        arr = arr.transpose(*meta["dims"])
+        # `meta["dims"]`/`meta["coord_attrs"]` keys are whatever
+        # `write_ome_zarr` stashed verbatim -- uppercase them too, so a
+        # store written before this project's all-uppercase convention was
+        # adopted (e.g. dims stashed as ["m_z", "y", "x"]) still round-trips
+        # against `arr`'s now-always-uppercase dims.
+        arr = arr.transpose(*(d.upper() for d in meta["dims"]))
         arr.name = meta["name"]
         arr.attrs = dict(meta["attrs"])
         for dim, coord_attrs in meta["coord_attrs"].items():
-            arr.coords[dim].attrs = dict(coord_attrs)
+            arr.coords[dim.upper()].attrs = dict(coord_attrs)
         return arr
 
     # No `write_ome_zarr` metadata (a Zarr store written by another tool) --

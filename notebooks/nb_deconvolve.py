@@ -25,7 +25,7 @@ with app.setup:
         load_decay_profile,
         deconvolute_dataset,
     )
-    from src.imzml_io import load_dataarray, save_dataarray
+    from src.imzml_io import DATAARRAY_EXTENSIONS, load_dataarray, save_dataarray
     from src.plotting import image_comparison_layout
 
 
@@ -248,7 +248,7 @@ def _():
     widget_selected_dir = mo.ui.file_browser(
         multiple=False,
         selection_mode="all",
-        filetypes=[".h5", ".ome.zarr"],
+        filetypes=DATAARRAY_EXTENSIONS,
         initial_path="data",
     )
     mo.vstack(

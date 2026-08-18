@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.14"
+__generated_with = "0.23.16"
 app = marimo.App(width="full")
 
 with app.setup:
@@ -31,7 +31,7 @@ with app.setup:
         export_xarray_to_tiff,
         render_shaded_tiff,
     )
-    from src.imzml_io import load_dataarray
+    from src.imzml_io import DATAARRAY_EXTENSIONS, load_dataarray
 
 
 @app.cell
@@ -47,7 +47,7 @@ def _():
 @app.cell
 def _():
     widget_selected_file = mo.ui.file_browser(
-        filetypes=[".h5", ".ome.zarr"], selection_mode="all", multiple=False,
+        filetypes=DATAARRAY_EXTENSIONS, selection_mode="all", multiple=False,
     )
     mo.vstack(
         [
@@ -73,7 +73,7 @@ def _(widget_selected_file):
             `{input_file.parent}` """
             ).callout(kind="success")
         )
-    return data_xr, out_dir
+    return data_xr, input_file, out_dir
 
 
 @app.cell
@@ -84,7 +84,7 @@ def _():
 
 
 @app.cell
-def _(cmap_dict, data_xr, out_dir):
+def _(cmap_dict, data_xr, input_file, out_dir):
     mz_vals = data_xr.M_Z.values
     mz_options = {f"{val:.4f}": val for val in mz_vals}
 
@@ -168,7 +168,7 @@ def _(cmap_dict, data_xr, out_dir):
         export_tiff_button.disabled = True
 
         try:
-            tiff_dir = out_dir / "exported_datacube"
+            tiff_dir = out_dir / f"{input_file.name}_exported_datacube"
 
             export_xarray_to_tiff(
                 data_xr,
