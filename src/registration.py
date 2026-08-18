@@ -19,6 +19,8 @@ from skimage.filters import (
     threshold_yen,
 )
 
+from .imzml_io import pixel_sizes
+
 # scikit-image global threshold methods available to `mask_from_threshold`.
 THRESHOLD_METHODS: Dict[str, Callable[..., float]] = {
     "otsu": threshold_otsu,
@@ -238,18 +240,15 @@ def register_images(
 def apply_transform_resample(
     moving: xr.DataArray, reference_image: sitk.Image, transform: sitk.Transform
 ) -> np.ndarray:
-    """Resample `moving` (an xr.DataArray with `pixel_size_x`/`pixel_size_y`
-    in `.attrs`) onto `reference_image`'s grid using `transform`,
-    nearest-neighbor interpolated with a 0.0 fill value.
+    """Resample `moving` (an xr.DataArray with µm ``X``/``Y`` coords, from
+    which the pixel spacing is derived) onto `reference_image`'s grid using
+    `transform`, nearest-neighbor interpolated with a 0.0 fill value.
 
     Returns a raw ``(y, x)`` array — `reference_image` is a `sitk.Image`
     and doesn't carry usable X/Y coordinate metadata to wrap the result in.
     """
-    spacing = (
-        float(np.asarray(moving.attrs["pixel_size_x"])),
-        float(np.asarray(moving.attrs["pixel_size_y"])),
-    )
-    moving_sitk = build_sitk_image(moving.values, spacing)
+    spacing_y, spacing_x = pixel_sizes(moving)
+    moving_sitk = build_sitk_image(moving.values, (spacing_x, spacing_y))
 
     resampler = sitk.ResampleImageFilter()
     resampler.SetReferenceImage(reference_image)
@@ -269,9 +268,8 @@ def crop_to_transformed_bbox(
 
     `transform` maps REF -> MALDI; it is inverted internally to map the
     MALDI image's corner points into REF physical space. Both `maldi_image`
-    and `ref_image` must have ``X``/``Y`` coordinate arrays to slice
-    against; `maldi_image` must also have `pixel_size_x`/`pixel_size_y`
-    attrs.
+    and `ref_image` must have ``X``/``Y`` coordinate arrays (in µm) to
+    slice against; `maldi_image`'s pixel spacing is derived from them.
     """
     try:
         inverse_transform = transform.GetInverse()
@@ -281,8 +279,7 @@ def crop_to_transformed_bbox(
         ) from e
 
     size_x, size_y = int(maldi_image.sizes["X"]), int(maldi_image.sizes["Y"])
-    spacing_x = float(np.asarray(maldi_image.attrs["pixel_size_x"]))
-    spacing_y = float(np.asarray(maldi_image.attrs["pixel_size_y"]))
+    spacing_y, spacing_x = pixel_sizes(maldi_image)
     corners_local = [
         (0.0, 0.0),
         (size_x * spacing_x, 0.0),

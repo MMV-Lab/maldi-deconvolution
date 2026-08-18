@@ -25,7 +25,12 @@ with app.setup:
         load_decay_profile,
         deconvolute_dataset,
     )
-    from src.imzml_io import DATAARRAY_EXTENSIONS, load_dataarray, save_dataarray
+    from src.imzml_io import (
+        DATAARRAY_EXTENSIONS,
+        load_dataarray,
+        pixel_sizes,
+        save_dataarray,
+    )
     from src.plotting import image_comparison_layout
 
 
@@ -253,7 +258,7 @@ def _():
     )
     mo.vstack(
         [
-            mo.md("# Select the original data (`.h5` file or `.ome.zarr` store):"),
+            mo.md("# Select the original data (`.ome.zarr` store):"),
             widget_selected_dir,
         ]
     )
@@ -279,7 +284,7 @@ def _(parameters_form, widget_selected_dir):
         original_xr = load_dataarray(input)
         original_xr = original_xr.chunk({"M_Z": 1, "Y": -1, "X": -1})
         _sim_pixel_size = float(parameters_form.value["step_size"])
-        _image_pixel_size = float(original_xr.attrs.get("pixel_size_x"))
+        _image_pixel_size = pixel_sizes(original_xr)[1]
         if _image_pixel_size != _sim_pixel_size:
             # del original_xr
             mo.output.replace(
@@ -353,18 +358,21 @@ def _(export_button, input, maldi_psf, result_xr):
         )
         out_dir.mkdir(exist_ok=True, parents=True)
 
+        # Base output name: the input store's name minus the suffixes the
+        # extract notebook appended (e.g. "X.imzml_original.ome.zarr" -> "X.imzml").
+        _base_name = input.name.removesuffix(".ome.zarr").removesuffix("_original")
+
         # Only the (tiny) constructor params + coarse kernels are persisted
         # -- MaldiPSFGenerator.save (see its docstring) skips the fine-grid
         # simulation arrays entirely since they're deterministically
         # re-derivable from these params alone.
         maldi_psf.save(
-            out_dir
-            / f"{result_xr.attrs['original_file_name']}_simulation_data.json",
+            out_dir / f"{_base_name}_simulation_data.json",
         )
 
         save_dataarray(
             result_xr,
-            out_dir / f"{result_xr.attrs['original_file_name']}_deconvolved.ome.zarr",
+            out_dir / f"{_base_name}_deconvolved.ome.zarr",
         )
 
     mo.output.append(

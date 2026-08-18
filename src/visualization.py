@@ -12,6 +12,8 @@ import xarray as xr
 from datashader.transfer_functions import shade
 from matplotlib.colors import Colormap, LinearSegmentedColormap
 
+from .imzml_io import pixel_sizes
+
 # Named matplotlib colormaps offered in the visualize notebook's colormap picker.
 DEFAULT_COLORMAP_NAMES = [
     "viridis",
@@ -88,25 +90,25 @@ CMAP_DICT: Dict[str, Colormap] = build_colormap_dict()
 def export_xarray_to_tiff(
     data_array: xr.DataArray,
     output_dir: Path,
+    base_name: str = "data",
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> None:
     """Export an xarray DataArray to TIFF, one file per m/z value, handling
     both single ion images and multi-iteration stacks.
 
     The ``resolution`` tag is written in pixels-per-micrometer
-    (``1 / pixel_size``), consistent with the ``unit: "um"`` ImageJ metadata
-    written alongside it.
+    (``1 / pixel_size``, from the Y/X coord spacing), consistent with the
+    ``unit: "um"`` ImageJ metadata written alongside it.
 
-    ``status_callback``, if given, is called with a short progress string
-    before each file is written (used to drive a UI status widget).
+    ``base_name`` prefixes every output filename (typically the source
+    file's name). ``status_callback``, if given, is called with a short
+    progress string before each file is written (used to drive a UI status
+    widget).
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    pixel_size_x = data_array.attrs.get("pixel_size_x", 1.0)
-    pixel_size_y = data_array.attrs.get("pixel_size_y", 1.0)
-    original_file_name = data_array.attrs.get("original_file_name", "data")
-    tolerance = data_array.attrs.get("tolerance", 0.0)
+    pixel_size_y, pixel_size_x = pixel_sizes(data_array)
     resolution = (1 / pixel_size_x, 1 / pixel_size_y)
 
     has_iteration = "ITERATION" in data_array.dims
@@ -122,11 +124,11 @@ def export_xarray_to_tiff(
         if has_iteration:
             # Select stack: (ITERATION, Y, X)
             axes = "TYX"
-            fname = f"{original_file_name}_mz_{mz:.4f}±{tolerance}_deconvolved.tiff"
+            fname = f"{base_name}_mz_{mz:.4f}_deconvolved.tiff"
         else:
             # Select slice: (Y, X)
             axes = "YX"
-            fname = f"{original_file_name}_mz_{mz:.4f}±{tolerance}_original.tiff"
+            fname = f"{base_name}_mz_{mz:.4f}_original.tiff"
 
         tifffile.imwrite(
             output_dir / fname,

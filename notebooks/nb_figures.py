@@ -54,10 +54,14 @@ def _():
 @app.cell
 def _():
     manual_file = Path(
-        "data/decay_curve/SMALDI 5/Cerebellum/DHAP_positive_A43.5/multiple_passes_filtered.h5"
+        "data/decay_curve/SMALDI 5/Cerebellum/DHAP_positive_A43.5/multiple_passes_filtered.ome.zarr"
     )
 
+    # The store's time axis comes back as a 0-based ITERATION index (see
+    # save_dataarray); here it holds ablation passes, numbered from 1.
     data_xr = load_dataarray(manual_file).sortby('M_Z')
+    data_xr = data_xr.rename({"ITERATION": "PASS_NUM"})
+    data_xr = data_xr.assign_coords(PASS_NUM=data_xr.PASS_NUM + 1)
     intensity_ratios_xr = data_xr / data_xr.sel(M_Z=760.5851, method='nearest')
     return (intensity_ratios_xr,)
 

@@ -19,7 +19,6 @@ with app.setup:
     import hvplot.xarray
     import hvplot.polars
 
-    from pyimzml.ImzMLParser import ImzMLParser
     import SimpleITK as sitk
 
     from sklearn.metrics import (
@@ -65,6 +64,7 @@ with app.setup:
     from src.imzml_io import (
         DATAARRAY_EXTENSIONS,
         load_dataarray,
+        pixel_sizes,
         save_dataarray,
     )
     from src.plotting import set_hv_backend
@@ -98,7 +98,7 @@ def _():
             mo.vstack(
                 [
                     mo.md(
-                        "# Select the **h5** or **ome.zarr** data containing the **deconvolved MALDI** data:"
+                        "# Select the **ome.zarr** store containing the **deconvolved MALDI** data:"
                     ),
                     maldi_select_widget,
                 ]
@@ -948,12 +948,12 @@ def _(
     REF_sitk = build_sitk_image(_REF_gray, (REF_pixel_um, REF_pixel_um))
 
     # MALDI 2D array
+    _MALDI_pixel_size_y, _MALDI_pixel_size_x = pixel_sizes(
+        MALDI_image_registration_xr
+    )
     MALDI_sitk = build_sitk_image(
         MALDI_image_registration_xr.values,
-        (
-            MALDI_image_registration_xr.attrs["pixel_size_x"],
-            MALDI_image_registration_xr.attrs["pixel_size_y"],
-        ),
+        (_MALDI_pixel_size_x, _MALDI_pixel_size_y),
     )
 
     # Landmark-based affine initialisation (coordinates are already in µm)
@@ -1010,7 +1010,6 @@ def _(
     MALDI_m_z_transform,
     REF_MALDI_transform,
     REF_image_xr,
-    REF_pixel_um,
     REF_sitk,
     deconv_image_path,
 ):
@@ -1058,12 +1057,6 @@ def _(
                 "Y": REF_image_xr.coords["Y"],
                 "X": REF_image_xr.coords["X"],
             },
-            attrs={
-                "pixel_size_x": REF_pixel_um,
-                "pixel_size_y": REF_pixel_um,
-                "long_name": "Ion Intensity",
-                "units": "a.u.",
-            },
         )
     else:
         MALDI_image_transformed_xr = None
@@ -1095,7 +1088,6 @@ def _(
     MALDI_m_z_registration,
     REF_image_raw,
     REF_image_xr,
-    REF_pixel_um,
     deconv_image_path,
     is_fluorescence,
     is_rgb,
@@ -1123,13 +1115,6 @@ def _(
             _output = _output.rename({"S": "M_Z"})
 
         _output = _output.assign_coords(M_Z=np.arange(len(_output.M_Z)))
-
-        _output = _output.assign_attrs(
-            {
-                "pixel_size_x": REF_pixel_um,
-                "pixel_size_y": REF_pixel_um,
-            }
-        )
 
         _output = _output.sel(X=x_slice, Y=y_slice)
 

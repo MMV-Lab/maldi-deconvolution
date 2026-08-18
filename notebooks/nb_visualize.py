@@ -31,7 +31,7 @@ with app.setup:
         export_xarray_to_tiff,
         render_shaded_tiff,
     )
-    from src.imzml_io import DATAARRAY_EXTENSIONS, load_dataarray
+    from src.imzml_io import DATAARRAY_EXTENSIONS, load_dataarray, pixel_sizes
 
 
 @app.cell
@@ -39,7 +39,7 @@ def _():
     mo.md(r"""
     # Welcome!
 
-    ## This notebook serves the purpose of exporting useful visualizations and raw image data from an already processed `h5` or `ome.zarr` file.
+    ## This notebook serves the purpose of exporting useful visualizations and raw image data from an already processed `ome.zarr` store.
     """)
     return
 
@@ -52,7 +52,7 @@ def _():
     mo.vstack(
         [
             mo.md(
-                "## Select an `h5` or `ome.zarr` file. Both deconvolved and original data are accepted"
+                "## Select an `ome.zarr` store. Both deconvolved and original data are accepted"
             ),
             widget_selected_file,
         ]
@@ -145,10 +145,8 @@ def _(cmap_dict, data_xr, input_file, out_dir):
         if v_max <= v_min:
             v_max = v_min + 1e-6
 
-        _aspect = float(
-            data_xr.attrs.get("pixel_size_y")
-            / data_xr.attrs.get("pixel_size_x")
-        )
+        _pixel_size_y, _pixel_size_x = pixel_sizes(data_xr)
+        _aspect = _pixel_size_y / _pixel_size_x
 
         return slice_data.hvplot.image(
             x="X",
@@ -173,6 +171,7 @@ def _(cmap_dict, data_xr, input_file, out_dir):
             export_xarray_to_tiff(
                 data_xr,
                 tiff_dir,
+                base_name=input_file.name,
                 status_callback=lambda msg: setattr(status_text, "value", f"⏳ {msg}"),
             )
 
@@ -222,8 +221,7 @@ def _(cmap_dict, data_xr, input_file, out_dir):
             # ============= TIFF
 
             data_2d = current_plot.data[list(current_plot.data.data_vars)[0]]
-            pixel_size_x = data_2d.attrs.get("pixel_size_x")
-            pixel_size_y = data_2d.attrs.get("pixel_size_y")
+            pixel_size_y, pixel_size_x = pixel_sizes(data_xr)
 
             v_min, v_max = np.nanpercentile(
                 data_2d.values, [low_perc_slider.value, high_perc_slider.value]

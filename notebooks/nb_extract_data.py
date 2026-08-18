@@ -17,7 +17,12 @@ with app.setup:
     if str(_root_dir) not in sys.path:
         sys.path.append(str(_root_dir))
 
-    from src.imzml_io import read_imzml_to_xarray, parse_mz_csv, save_dataarray
+    from src.imzml_io import (
+        read_imzml_to_xarray,
+        parse_mz_csv,
+        pixel_sizes,
+        save_dataarray,
+    )
 
 
 @app.cell
@@ -281,12 +286,13 @@ def _(filepath, m_z_values, tolerance):
 
 @app.cell
 def _(ion_image_xr):
+    _pixel_size_y, _pixel_size_x = pixel_sizes(ion_image_xr)
+
     ion_image_xr.hvplot.image(
         x="X",
         y="Y",
         aspect="equal",
-        data_aspect=ion_image_xr.attrs["pixel_size_y"]
-        / ion_image_xr.attrs["pixel_size_x"],
+        data_aspect=_pixel_size_y / _pixel_size_x,
         hover=True,
         robust=True,
         cmap="viridis",
@@ -296,10 +302,7 @@ def _(ion_image_xr):
 
 @app.cell
 def _(ion_image_xr):
-    ion_image_xr.attrs
-
-    _pixel_size_x = ion_image_xr.attrs["pixel_size_x"]
-    _pixel_size_y = ion_image_xr.attrs["pixel_size_y"]
+    _pixel_size_y, _pixel_size_x = pixel_sizes(ion_image_xr)
 
     if _pixel_size_x != _pixel_size_y:
         mo.output.append(mo.md("Pixels are not square").callout(kind="warn"))

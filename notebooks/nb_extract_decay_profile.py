@@ -6,8 +6,6 @@ app = marimo.App(width="full")
 with app.setup:
     import marimo as mo
     import numpy as np
-    from pyimzml.ImzMLParser import ImzMLParser
-    import warnings
     import re
 
     import polars as pl
@@ -25,7 +23,9 @@ with app.setup:
     if str(_root_dir) not in sys.path:
         sys.path.append(str(_root_dir))
 
-    from src.imzml_io import read_imzml_to_xarray, find_peaks_from_imzml, save_dataarray
+    from bioio_imzml import auto_pick_peaks
+
+    from src.imzml_io import read_imzml_to_xarray, save_dataarray
     from src.decay_profile import (
         compute_tissue_mask,
         compute_pass_statistics,
@@ -74,20 +74,12 @@ def _(widget_selected_file):
 
 
 @app.cell
-def _(path_list):
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        imzml_list = [ImzMLParser(i) for i in path_list]
-    return (imzml_list,)
-
-
-@app.cell
 def _():
     return
 
 
 @app.cell
-def _(imzml_list, path_list):
+def _(path_list):
     # ==========================================
     # CONFIGURATION
     # ==========================================
@@ -96,30 +88,31 @@ def _(imzml_list, path_list):
     top_n_peaks = 10  # How many automatic peaks to track
     bin_width = 0.05
 
-    n_passes = len(imzml_list)
-    parser_pass1 = imzml_list[0]
-    all_coords = parser_pass1.coordinates
-    max_x = max(c[0] for c in all_coords)
-    max_y = max(c[1] for c in all_coords)
+    n_passes = len(path_list)
 
     # ==========================================
     # AUTOMATIC PEAK FINDING (on Pass 1)
     # ==========================================
 
-    with mo.status.progress_bar(
-        total=len(all_coords),
+    with mo.status.spinner(
         title="Step 1: Automatic Peak Finding",
         subtitle="Building Mean Spectrum of Pass 1...",
-    ) as bar:
-        target_mzs, spectrum_df = find_peaks_from_imzml(
+    ):
+        _peaks = auto_pick_peaks(
             path_list[0],
             min_mz=min_mz,
             max_mz=max_mz,
             bin_width=bin_width,
             top_n_peaks=top_n_peaks,
-            min_peak_separation=1.5 * mz_tol,
+            min_separation_mz=1.5 * mz_tol,
         )
-        bar.update(len(all_coords))
+        target_mzs = _peaks.mzs.tolist()
+        spectrum_df = pl.DataFrame(
+            {
+                "m_z": _peaks.mean_spectrum_mz,
+                "intensity": _peaks.mean_spectrum_intensity,
+            }
+        )
 
     mo.output.append(
         mo.md(
@@ -182,8 +175,6 @@ def _(passes_xr):
 
 @app.cell
 def _():
-    # tmp = xr.open_dataarray("data/tmp.h5")
-    # tmp
     return
 
 
@@ -281,7 +272,7 @@ def _(decay_df, export_button, passes_xr, path_list):
     decay_df.write_csv(_out_path, float_scientific=False, float_precision=16)
 
     save_dataarray(
-        passes_xr, path_list[0].parent / f"multiple_passes_filtered.h5"
+        passes_xr, path_list[0].parent / "multiple_passes_filtered.ome.zarr"
     )
 
     mo.md(f"""Saved decay profile as `{_out_path.name}` in:
