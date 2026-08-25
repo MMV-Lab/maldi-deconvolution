@@ -5,86 +5,9 @@ holds only genuinely reusable, notebook-agnostic interactive-plotting
 patterns; one-off exploratory cells stay inline in their notebooks.
 """
 
-from typing import Dict, Optional, Sequence
-
 import holoviews as hv
 import pandas as pd
-
-
-def set_hv_backend(backend: str, fig_format: Optional[str] = "svg") -> None:
-    """Switch HoloViews' active rendering backend, optionally pinning the
-    static export format (``fig=`` used by ``hv.save``/SVG output).
-
-    Replaces the repeated ``hv.extension(backend)`` / ``hv.extension(backend);
-    hv.output(backend=backend, fig=fig_format)`` pairs scattered through the
-    notebooks. Pass ``fig_format=None`` to only switch backends (e.g. quick
-    bokeh interactivity for one cell) without touching output format.
-    """
-    hv.extension(backend)
-    if fig_format is not None:
-        hv.output(backend=backend, fig=fig_format)
-
-
-def register_hv_backends(*backends: str, fig_format: str = "svg") -> None:
-    """Register multiple hvplot/HoloViews backends up front (module-setup
-    time) and set the default static export format for hvplot's own output.
-
-    Used once, in a notebook's setup block, when a notebook needs to
-    fluidly switch between backends later via ``set_hv_backend``.
-    """
-    import hvplot
-
-    hvplot.extension(*backends)
-    hvplot.output(fig=fig_format)
-
-
-def decay_curve_group_overlay(
-    df: pd.DataFrame,
-    group_col: str,
-    x_col: str,
-    y_col: str,
-    yerr_col: str,
-    *,
-    colors: Optional[Dict[str, str]] = None,
-    markers: Optional[Dict[str, str]] = None,
-    title: str = "",
-    xlabel: str = "Pass",
-    ylabel: str = "Normalised Intensity",
-) -> hv.NdOverlay:
-    """Build a per-group ErrorBars * Curve * Scatter decay-curve overlay.
-
-    One overlay entry is produced per distinct value of ``group_col`` (e.g.
-    laser-energy setting or tissue type), each styled with a distinct
-    color/marker (auto-cycled from a default palette if not given).
-    """
-    default_colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
-    default_markers = ["o", "s", "^", "D", "v"]
-    groups = list(df[group_col].unique())
-    colors = colors or {
-        g: default_colors[i % len(default_colors)] for i, g in enumerate(groups)
-    }
-    markers = markers or {
-        g: default_markers[i % len(default_markers)] for i, g in enumerate(groups)
-    }
-
-    overlays = {}
-    for g in groups:
-        sub = df[df[group_col] == g]
-        overlays[g] = (
-            hv.ErrorBars(sub, kdims=[x_col], vdims=[y_col, yerr_col]).opts(
-                color=colors[g], alpha=0.4
-            )
-            * hv.Curve(sub, kdims=[x_col], vdims=[y_col], label=str(g)).opts(
-                color=colors[g]
-            )
-            * hv.Scatter(sub, kdims=[x_col], vdims=[y_col]).opts(
-                color=colors[g], marker=markers[g], s=50
-            )
-        )
-    return hv.NdOverlay(overlays).opts(
-        hv.opts.Curve(xlabel=xlabel, ylabel=ylabel),
-        hv.opts.NdOverlay(title=title),
-    )
+from typing import Dict, Optional, Sequence
 
 
 def image_comparison_layout(

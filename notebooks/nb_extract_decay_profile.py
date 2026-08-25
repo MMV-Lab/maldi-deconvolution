@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.10"
+__generated_with = "0.24.0"
 app = marimo.App(width="full")
 
 with app.setup:
@@ -31,16 +31,15 @@ with app.setup:
         compute_pass_statistics,
         fit_decay_models,
     )
-    from src.plotting import register_hv_backends, set_hv_backend
 
-    register_hv_backends("matplotlib", "bokeh")
-    set_hv_backend("matplotlib")
+    hv.extension("matplotlib")
+    hv.output(backend="matplotlib", fig="svg")
 
+    hvplot.extension("matplotlib", "bokeh")
+    hvplot.output(fig="svg")
 
-@app.cell
-def _():
     hvplot.output.info()
-    return
+    hv.output.info()
 
 
 @app.cell
@@ -159,18 +158,12 @@ def _(path_list):
     stats_ds = compute_pass_statistics(masked_passes)
     return (
         masked_passes,
-        spectrum_df,
         n_passes,
         passes_xr,
+        spectrum_df,
         stats_ds,
         target_mzs,
     )
-
-
-@app.cell
-def _(passes_xr):
-    passes_xr
-    return
 
 
 @app.cell
@@ -300,12 +293,6 @@ def _(decay_df, n_passes):
 
     fit_ds = fit_decay_models(x_data, y_data, y_weights, n_passes)
     return (fit_ds,)
-
-
-@app.cell
-def _():
-    hvplot.output.info()
-    return
 
 
 @app.cell

@@ -67,9 +67,7 @@ with app.setup:
         pixel_sizes,
         save_dataarray,
     )
-    from src.plotting import set_hv_backend
-
-    set_hv_backend("bokeh", fig_format=None)
+    hv.extension("bokeh")
 
 
 @app.cell
@@ -392,7 +390,7 @@ def _():
 
 @app.cell
 def _(MALDI_image_registration_xr, REF_image_xr, is_rgb):
-    set_hv_backend("bokeh", fig_format=None)
+    hv.extension("bokeh")
 
     _vmax = float(MALDI_image_registration_xr.quantile(0.98))
 
@@ -1139,7 +1137,7 @@ def _(
     REF_image_transformed_xr,
     is_rgb,
 ):
-    set_hv_backend("bokeh", fig_format=None)
+    hv.extension("bokeh")
 
     cmap_dict = build_colormap_dict(colormap_names=[])
 
@@ -1256,7 +1254,7 @@ def _(
 
 @app.cell
 def _(REF_image_transformed_xr, REF_image_xr, is_rgb):
-    set_hv_backend("bokeh", fig_format=None)
+    hv.extension("bokeh")
 
     # 1. Keep your Polygons element as the source of the drawing stream
     _he_polys = hv.Polygons([]).opts(
@@ -1556,7 +1554,7 @@ def _(MALDI_image_transformed_xr, mask_xr):
 
 @app.cell
 def _(pr_plot, roc_plot):
-    set_hv_backend("matplotlib", fig_format=None)
+    hv.extension("matplotlib")
     (roc_plot + pr_plot).cols(2)
     return
 
@@ -1757,7 +1755,7 @@ def _(MALDI_transform_0, MALDI_transform_1, REF_pixel_um, mask_xr):
 
 @app.cell
 def _(radial_profile_df):
-    set_hv_backend("bokeh", fig_format=None)
+    hv.extension("bokeh")
 
     _dist = radial_profile_df["Distance_um"].to_numpy()
 
@@ -1949,7 +1947,7 @@ def _(
 
 @app.cell
 def _(REF_pixel_um, radial_profile_df, widths_0, widths_6):
-    set_hv_backend("bokeh", fig_format=None)
+    hv.extension("bokeh")
 
     _dist_um = radial_profile_df["Distance_um"].to_numpy()
     _norm_0 = radial_profile_df["Iteration_0_norm"].to_numpy()

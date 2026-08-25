@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.10"
+__generated_with = "0.24.0"
 app = marimo.App(width="full")
 
 with app.setup(hide_code=True):
@@ -18,11 +18,14 @@ with app.setup(hide_code=True):
     import holoviews as hv
     import hvplot
     import hvplot.xarray
+    import hvplot.polars
     from datashader.transfer_functions import shade, stack
 
     from PIL import Image, ImageChops
+    from typing import Dict, Optional
 
     from pyimzml.ImzMLParser import ImzMLParser
+    from bokeh.palettes import Category10
 
     import sys
     from pathlib import Path as _Path
@@ -32,9 +35,82 @@ with app.setup(hide_code=True):
         sys.path.append(str(_root_dir))
 
     from src.imzml_io import load_dataarray
-    from src.plotting import set_hv_backend, decay_curve_group_overlay
 
-    set_hv_backend("matplotlib")
+    hv.extension("matplotlib")
+    hv.output(backend="matplotlib", fig="svg")
+
+
+@app.cell
+def _():
+    _renderer = hv.plotting.mpl.MPLRenderer.instance(dpi=300, fig="svg")
+
+    custom_render = lambda x: mo.Html(_renderer.html(x))
+    return (custom_render,)
+
+
+@app.cell
+def _(Category20):
+    def decay_curve_group_overlay(
+        df: pl.DataFrame,
+        group_col: str,
+        x_col: str,
+        y_col: str,
+        yerr_col: str,
+        *,
+        colors: Optional[Dict[str, str]] = None,
+        markers: Optional[Dict[str, str]] = None,
+        title: str = "",
+        xlabel: str = "Pass",
+        ylabel: str = "Normalised Intensity",
+    ) -> hv.NdOverlay:
+        """Build a per-group ErrorBars * Curve * Scatter decay-curve overlay.
+
+        One overlay entry is produced per distinct value of ``group_col`` (e.g.
+        laser-energy setting or tissue type), each styled with a distinct
+        color/marker (auto-cycled from a predefined palette if not given).
+        """
+        default_markers = ["o", "s", "^", "D", "v", "P", "X", "*"]
+
+        groups = list(dict.fromkeys(df[group_col].to_list()))
+
+        n = len(groups)
+        if n <= 3:
+            palette = Category10[3][:n]
+        elif n <= 10:
+            palette = Category10[n]
+        elif n <= 20:
+            palette = Category20[n]
+        else:
+            base = Category20[20]
+            palette = [base[i % len(base)] for i in range(n)]
+
+        colors = colors or {g: palette[i] for i, g in enumerate(groups)}
+        markers = markers or {
+            g: default_markers[i % len(default_markers)]
+            for i, g in enumerate(groups)
+        }
+
+        overlays = {}
+        for g in groups:
+            sub = df.filter(pl.col(group_col) == g)
+            overlays[g] = (
+                hv.ErrorBars(sub, kdims=[x_col], vdims=[y_col, yerr_col]).opts(
+                    color=colors[g], alpha=0.4
+                )
+                * hv.Curve(
+                    sub, kdims=[x_col], vdims=[y_col], label=str(g)
+                ).opts(color=colors[g])
+                * hv.Scatter(sub, kdims=[x_col], vdims=[y_col]).opts(
+                    color=colors[g], marker=markers[g], s=50
+                )
+            )
+
+        return hv.NdOverlay(overlays, kdims=[hv.Dimension(group_col)]).opts(
+            hv.opts.Curve(xlabel=xlabel, ylabel=ylabel),
+            hv.opts.NdOverlay(title=title),
+        )
+
+    return (decay_curve_group_overlay,)
 
 
 @app.cell(hide_code=True)
@@ -55,65 +131,144 @@ def _():
 def _():
     manual_file = Path(
         "data/decay_curve/SMALDI 5/Cerebellum/DHAP_positive_A43.5/multiple_passes_filtered.ome.zarr"
-    )
+    ).resolve()
 
     # The store's time axis comes back as a 0-based ITERATION index (see
     # save_dataarray); here it holds ablation passes, numbered from 1.
-    data_xr = load_dataarray(manual_file).sortby('M_Z')
+    data_xr = load_dataarray(manual_file).sortby("M_Z")
     data_xr = data_xr.rename({"ITERATION": "PASS_NUM"})
     data_xr = data_xr.assign_coords(PASS_NUM=data_xr.PASS_NUM + 1)
-    intensity_ratios_xr = data_xr / data_xr.sel(M_Z=760.5851, method='nearest')
+    intensity_ratios_xr = data_xr / data_xr.sel(M_Z=760.5851, method="nearest")
     return (intensity_ratios_xr,)
 
 
 @app.cell
 def _(intensity_ratios_xr):
-    hv.output(backend='bokeh')
+    print(intensity_ratios_xr)
+    return
+
+
+@app.cell
+def _(intensity_ratios_xr):
+    df = (
+        pl.from_pandas(
+            intensity_ratios_xr.compute().to_dataframe().reset_index()
+        )
+        .rename({"ion_intensity": "intensity_ratio"})
+        .filter(pl.col("M_Z") != 760.5851)
+        .filter(
+            pl.col("intensity_ratio").is_finite()
+        )  # drop inf/nan from div-by-zero pixels
+    )
+
+    pass_summary = (
+        df.group_by(["M_Z", "PASS_NUM"])
+        .agg(
+            pl.col("intensity_ratio").mean().alias("mean_ratio"),
+            (
+                pl.col("intensity_ratio").std()
+                / pl.col("intensity_ratio").count().sqrt()
+            ).alias("sem_ratio"),
+        )
+        .sort(["M_Z", "PASS_NUM"])
+    )
+
+    pass_summary = pass_summary.rename({"M_Z": "m/z", "PASS_NUM": "pass_num"})
+
+    drift = (
+        pass_summary.group_by("m/z")
+        .agg(
+            pl.col("mean_ratio").mean().alias("mean"),
+            (pl.col("mean_ratio").std() / pl.col("mean_ratio").mean()).alias(
+                "cv_across_passes"
+            ),
+            pl.col("mean_ratio").std().alias("std"),
+        )
+        .sort("cv_across_passes", descending=True)
+    )
+
+    n_dropped = (
+        df.height - df.filter(pl.col("intensity_ratio").is_finite()).height
+    )
+    print(
+        f"Dropped {n_dropped} inf/nan rows from zero-intensity reference pixels"
+    )
+    return drift, pass_summary
+
+
+@app.cell
+def _(custom_render, pass_summary):
+    hv.extension("matplotlib")
+
+    _curves = hv.NdOverlay(
+        {
+            f"{mz:.2f}": hv.ErrorBars(
+                pass_summary.filter(pl.col("m/z") == mz),
+                kdims="pass_num",
+                vdims=["mean_ratio", "sem_ratio"],
+            )
+            * hv.Curve(
+                pass_summary.filter(pl.col("m/z") == mz),
+                kdims="pass_num",
+                vdims="mean_ratio",
+            )
+            for mz in pass_summary["m/z"].unique()
+        },
+        kdims=hv.Dimension("m/z"),
+    )
+
+    _curves.opts(
+        hv.opts.Curve(),
+        hv.opts.NdOverlay(
+            xlabel="Pass",
+            ylabel="Intensity Ratio vs 760.5851",
+            legend_position="right",
+        ),
+    )
+
+    custom_render(_curves)
+    return
+
+
+@app.cell
+def _(pass_summary):
+    pass_summary
+    return
+
+
+@app.cell
+def _(drift):
+    print(drift)
+    return
+
+
+@app.cell
+def _(intensity_ratios_xr):
+    hv.output(backend="bokeh")
 
     pass_nums = [1, 3, 5, 9]
     m_z_vals = intensity_ratios_xr.M_Z.values
 
-    grid = hv.GridSpace(kdims=['m/z', 'Pass'])
+    grid = hv.GridSpace(kdims=["m/z", "Pass"])
 
     for p in pass_nums:
         for mz in m_z_vals:
             img_data = intensity_ratios_xr.sel(PASS_NUM=p, M_Z=mz).values
 
-            img = hv.Image(img_data, kdims=['x', 'y']).opts(colorbar=False, cmap="viridis")
+            img = hv.Image(img_data, kdims=["x", "y"]).opts(
+                colorbar=False, cmap="viridis"
+            )
 
             grid[mz, p] = img
 
     grid.opts(
-        shared_xaxis=True, 
+        shared_xaxis=True,
         shared_yaxis=True,
         plot_size=200,
         axiswise=True,
     )
 
     grid
-    return
-
-
-@app.cell
-def _():
-    hv.help(hv.Image.opts)
-    return
-
-
-@app.cell
-def _():
-    # _slice = intensity_ratios_xr.sel(
-    #     M_Z=mz_slider.value, ITERATION=iter_slider.value
-    # )
-
-    # intensity_ratios_xr.sel(PASS_NUM=[1,3,5,9]).hvplot.image(
-    #     x="X",
-    #     y="Y",
-    #     colorbar=True,
-    #     cmap="viridis",
-    #     data_aspect=1,
-    #     title=f"m/z={mz_slider.value:.4f}  iteration={iter_slider.value}",
-    # )
     return
 
 
@@ -182,20 +337,29 @@ def _():
 
 
 @app.cell
-def _(tic_passes_xr):
+def _(custom_render, tic_passes_xr):
     _pass_vals = sorted(tic_passes_xr.coords["PASS_NUM"].values.tolist())
 
-    hv.NdLayout(
+    _tic_grid = hv.NdLayout(
         {
             int(p): hv.Image(
                 tic_passes_xr.sel(**{"PASS_NUM": p}),
                 kdims=["X", "Y"],
                 vdims=["TIC"],
-            ).opts(colorbar=False, cmap="viridis", data_aspect=1, width=200)
+            ).opts(
+                colorbar=False,
+                cmap="viridis",
+                data_aspect=1,
+                xlabel="x [μm]",
+                ylabel="y [μm]",
+                title=f"Pass {int(p)}",
+            )
             for p in _pass_vals
         },
         kdims=["PASS_NUM"],
     ).cols(3)
+
+    custom_render(_tic_grid)
     return
 
 
@@ -208,8 +372,8 @@ def _():
 
 
 @app.cell
-def _():
-    set_hv_backend("matplotlib", fig_format=None)
+def _(custom_render, decay_curve_group_overlay):
+    hv.extension("matplotlib")
 
     _base = Path(
         "/mnt/eternus/users/Davide/maldi-deconv-rl/data/decay_curve/SMALDI 5/Cerebellum"
@@ -226,29 +390,23 @@ def _():
         _df = pl.read_csv(_path)
         if "pass_num" in _df.columns:
             _df = _df.rename({"pass_num": "PASS_NUM"})
-        _df = _df.with_columns(pl.lit(_label).alias("setting"))
+        _df = _df.with_columns(pl.lit(_label).alias("Attenuator"))
         _curves.append(_df)
 
-    _all = pl.concat(_curves).to_pandas()
+    _all = pl.concat(_curves)
 
     decay_overlay = decay_curve_group_overlay(
         _all,
-        group_col="setting",
+        group_col="Attenuator",
         x_col="PASS_NUM",
         y_col="value",
         yerr_col="error",
-        colors={"A42": "#1f77b4", "A43.5": "#ff7f0e", "A45": "#2ca02c"},
-        markers={"A42": "o", "A43.5": "s", "A45": "^"},
-        title="Decay Curves – 3 Laser Energy Settings",
+        # colors={"A42": "#1f77b4", "A43.5": "#ff7f0e", "A45": "#2ca02c"},
+        # markers={"A42": "o", "A43.5": "s", "A45": "^"},
+        title="Decay Curves – 3 Laser Energy Settings (Cerebellum)",
     )
 
-    decay_overlay
-    return (decay_overlay,)
-
-
-@app.cell
-def _(decay_overlay):
-    hv.save(decay_overlay, r"data/figures/fig2/Panel_D_decay_curves_cerebellum.svg" )
+    custom_render(decay_overlay)
     return
 
 
@@ -261,7 +419,7 @@ def _():
 
 
 @app.cell
-def _():
+def _(custom_render, decay_curve_group_overlay):
     _base = Path(
         "/mnt/eternus/users/Davide/maldi-deconv-rl/data/decay_curve/SMALDI 5"
     )
@@ -279,23 +437,23 @@ def _():
         _df = pl.read_csv(_path)
         if "pass_num" in _df.columns:
             _df = _df.rename({"pass_num": "PASS_NUM"})
-        _df = _df.with_columns(pl.lit(_label).alias("tissue"))
+        _df = _df.with_columns(pl.lit(_label).alias("Tissue Type"))
         _curves2.append(_df)
 
-    _all2 = pl.concat(_curves2).to_pandas()
+    _all2 = pl.concat(_curves2)
 
     tissue_overlay = decay_curve_group_overlay(
         _all2,
-        group_col="tissue",
+        group_col="Tissue Type",
         x_col="PASS_NUM",
         y_col="value",
         yerr_col="error",
         colors={"Cerebellum": "#1f77b4", "Kidney": "#d62728"},
         markers={"Cerebellum": "o", "Kidney": "s"},
-        title="Decay Curves – Cerebellum vs Kidney (A43.5)",
+        title="Decay Curves – Cerebellum vs Kidney (DHAP, A43.5, Positive-Ion Mode)",
     )
 
-    tissue_overlay
+    custom_render(tissue_overlay)
     return
 
 
@@ -308,7 +466,7 @@ def _():
 
 
 @app.cell
-def _():
+def _(custom_render, decay_curve_group_overlay):
     _base = Path(
         "/mnt/eternus/users/Davide/maldi-deconv-rl/data/decay_curve/SMALDI 5/Cerebellum"
     )
@@ -323,23 +481,66 @@ def _():
         _df = pl.read_csv(_path)
         if "pass_num" in _df.columns:
             _df = _df.rename({"pass_num": "PASS_NUM"})
-        _df = _df.with_columns(pl.lit(_label).alias("setting"))
+        _df = _df.with_columns(pl.lit(_label).alias("Attenuator"))
         _curves_neg.append(_df)
 
-    _all_neg = pl.concat(_curves_neg).to_pandas()
+    _all_neg = pl.concat(_curves_neg)
 
     neg_overlay = decay_curve_group_overlay(
         _all_neg,
-        group_col="setting",
+        group_col="Attenuator",
         x_col="PASS_NUM",
         y_col="value",
         yerr_col="error",
         colors={"A42": "#1f77b4", "A43.5": "#ff7f0e"},
         markers={"A42": "o", "A43.5": "s"},
-        title="Decay Curves – Negative Mode (Cerebellum)",
+        title="Decay Curves – Negative Mode Cerebellum",
     )
 
-    neg_overlay
+    custom_render(neg_overlay)
+    return
+
+
+@app.cell
+def _(custom_render, decay_curve_group_overlay):
+    _base = Path(
+        "/mnt/eternus/users/Davide/maldi-deconv-rl/data/decay_curve/SMALDI 5/Cerebellum"
+    )
+
+    _settings = {
+        "DHB_A43.5": _base / "DHB_positive_A43.5" / "Decay_Profile.csv",
+        "CHCA_A42": _base / "CHCA_positive_A42" / "Decay_Profile.csv",
+        "DHAP_A43.5": _base / "DHAP_positive_A43.5" / "Decay_Profile.csv",
+    }
+
+    _curves = []
+    for _label, _path in _settings.items():
+        _df = pl.read_csv(_path)
+        if "pass_num" in _df.columns:
+            _df = _df.rename({"pass_num": "PASS_NUM"})
+        _df = _df.with_columns(pl.lit(_label).alias("Matrix Type"))
+        _curves.append(_df)
+
+    _all = pl.concat(_curves)
+
+    matrix_overlay = decay_curve_group_overlay(
+        _all,
+        group_col="Matrix Type",
+        x_col="PASS_NUM",
+        y_col="value",
+        yerr_col="error",
+        # colors={"A42": "#1f77b4", "A43.5": "#ff7f0e", "A45": "#2ca02c"},
+        # markers={"A42": "o", "A43.5": "s", "A45": "^"},
+        title="Decay Curves – Matrix (Cerebellum, Positive-Ion Mode)",
+    )
+
+    custom_render(matrix_overlay)
+    return (matrix_overlay,)
+
+
+@app.cell
+def _(custom_render, matrix_overlay):
+    custom_render(hv.Layout(matrix_overlay.values()).cols(3))
     return
 
 

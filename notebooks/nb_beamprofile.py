@@ -23,9 +23,7 @@ with app.setup:
         fit_gaussian2d,
         beam_diameter_stats,
     )
-    from src.plotting import set_hv_backend
-
-    set_hv_backend("bokeh", fig_format=None)
+    hv.extension("bokeh")
 
     # import hvplot.xarray
     # import hvplot.polars
@@ -127,7 +125,7 @@ def _(avg_img, x_coords, y_coords):
 
 @app.cell
 def _(X, Y, avg_img, global_best_fit, std_img):
-    set_hv_backend("matplotlib", fig_format=None)
+    hv.extension("matplotlib")
 
     # Define the dimensions with units
     x_dim = hv.Dimension("x", label=r"x ($\mu$m)")
@@ -231,7 +229,7 @@ def _(global_best_fit):
 
 @app.cell
 def _(X, Y, avg_img, global_best_fit, std_img):
-    set_hv_backend("matplotlib", fig_format=None)
+    hv.extension("matplotlib")
 
     # Define the dimensions with units
     _x_dim = hv.Dimension("x", label=r"x ($\mu$m)")
