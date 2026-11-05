@@ -185,14 +185,33 @@ def register_images(
     moving_sitk: sitk.Image,
     fixed_landmarks: Sequence[Tuple[float, float]],
     moving_landmarks: Sequence[Tuple[float, float]],
-    is_multimodal: bool = True,
+    bandpass_sigmas: Optional[Tuple[float, float]] = (1.5, 20.0),
+    metric: str = "correlation",
+    number_of_iterations: int = 5000,
 ) -> Tuple[sitk.Transform, float, str]:
     """Landmark-initialized affine registration, refined by SimpleITK
-    intensity-based optimization (Mattes mutual information for
-    multi-modal pairs such as MALDI vs. H&E, correlation otherwise).
+    intensity-based optimization.
 
     `fixed_landmarks`/`moving_landmarks` are lists of (x, y) point pairs in
-    the same physical units as each image's spacing.
+    the same physical units as each image's spacing. The landmarks are fit
+    with a rigid transform, so the affine starts at scale 1 in physical
+    space (both images already carry their true µm spacing).
+
+    Before optimizing:
+    - the reference is bin-shrunk to roughly the moving (MALDI) spacing, since
+      finer detail has no counterpart in the MALDI image;
+    - both images are band-passed with a difference of Gaussians
+      (`bandpass_sigmas` = (low, high) in physical units; None disables it),
+      so the metric is driven by cell-sized features instead of
+      low-frequency shading / the tissue outline;
+    - the metric is restricted to the (slightly eroded) footprint of the
+      landmark-placed moving image, which stops the affine from collapsing
+      onto a tiny overlap.
+
+    `metric` is "correlation" (normalized cross-correlation, default) or
+    "mattes" (Mattes mutual information). Every pixel inside the mask is
+    sampled; regular-step gradient descent runs until the step shrinks below
+    1e-4 or `number_of_iterations` is reached at each pyramid level.
 
     Returns (transform, metric_value, stop_condition_description).
     """
@@ -202,37 +221,63 @@ def register_images(
     landmark_initializer = sitk.LandmarkBasedTransformInitializerFilter()
     landmark_initializer.SetFixedLandmarks(fixed_lm)
     landmark_initializer.SetMovingLandmarks(moving_lm)
-    initial_transform = landmark_initializer.Execute(sitk.AffineTransform(2))
+    rigid = landmark_initializer.Execute(sitk.Euler2DTransform())
+
+    initial_transform = sitk.AffineTransform(2)
+    initial_transform.SetMatrix(rigid.GetMatrix())
+    initial_transform.SetTranslation(rigid.GetTranslation())
+    initial_transform.SetCenter(rigid.GetCenter())
+
+    # Bring the reference down to ~MALDI resolution (transform is physical,
+    # so it stays valid on the full-resolution reference)
+    shrink = max(1, round(min(moving_sitk.GetSpacing()) / max(ref_sitk.GetSpacing())))
+    fixed = sitk.BinShrink(sitk.Cast(ref_sitk, sitk.sitkFloat32), [shrink, shrink])
+    moving = sitk.Cast(moving_sitk, sitk.sitkFloat32)
+    if bandpass_sigmas is not None:
+        low, high = bandpass_sigmas
+        fixed, moving = (
+            sitk.SmoothingRecursiveGaussian(img, low)
+            - sitk.SmoothingRecursiveGaussian(img, high)
+            for img in (fixed, moving)
+        )
+
+    footprint = sitk.Resample(
+        sitk.Cast(moving_sitk * 0 + 1, sitk.sitkUInt8),
+        fixed,
+        rigid,
+        sitk.sitkNearestNeighbor,
+        0,
+    )
+    footprint = sitk.BinaryErode(footprint, [10, 10])
 
     reg = sitk.ImageRegistrationMethod()
-    # Mattes Mutual Information: standard for multi-modal registration
-    if is_multimodal:
+    if metric == "correlation":
+        reg.SetMetricAsCorrelation()
+    elif metric == "mattes":
         reg.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
     else:
-        reg.SetMetricAsCorrelation()
-    reg.SetInterpolator(sitk.sitkNearestNeighbor)
+        raise ValueError(f"Unknown metric {metric!r}; use 'correlation' or 'mattes'.")
+    reg.SetMetricSamplingStrategy(reg.NONE)
+    reg.SetMetricFixedMask(footprint)
+    # Linear for the metric (smooth gradients); final resample stays NN
+    reg.SetInterpolator(sitk.sitkLinear)
 
-    # Gradient descent with line search
-    reg.SetOptimizerAsGradientDescentLineSearch(
-        learningRate=1.0,
-        numberOfIterations=200,
-        convergenceMinimumValue=1e-7,
-        convergenceWindowSize=10,
+    reg.SetOptimizerAsRegularStepGradientDescent(
+        learningRate=2.0,  # max step, in physical units (µm)
+        minStep=1e-4,
+        numberOfIterations=number_of_iterations,
+        relaxationFactor=0.7,
+        gradientMagnitudeTolerance=1e-12,
     )
     reg.SetOptimizerScalesFromPhysicalShift()
 
     # Multi-resolution pyramid (coarse -> fine)
     reg.SetShrinkFactorsPerLevel(shrinkFactors=[4, 2, 1])
-    reg.SetSmoothingSigmasPerLevel(smoothingSigmas=[2.0, 1.0, 0.0])
+    reg.SetSmoothingSigmasPerLevel(smoothingSigmas=[4.0, 2.0, 0.0])
     reg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
 
-    # Start from the landmark-based affine transform
     reg.SetInitialTransform(initial_transform, inPlace=False)
-
-    ref_norm = sitk.RescaleIntensity(sitk.Cast(ref_sitk, sitk.sitkFloat32))
-    moving_norm = sitk.RescaleIntensity(sitk.Cast(moving_sitk, sitk.sitkFloat32))
-
-    transform = reg.Execute(ref_norm, moving_norm)
+    transform = reg.Execute(fixed, moving)
 
     return transform, reg.GetMetricValue(), reg.GetOptimizerStopConditionDescription()
 

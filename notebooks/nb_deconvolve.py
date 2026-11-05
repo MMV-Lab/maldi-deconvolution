@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.14"
+__generated_with = "0.24.0"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -116,7 +116,9 @@ def _(parameters_form):
             raise ValueError(f"CSV Error: {csv_error}")
 
         decay_errors = (
-            decay_df["error"].to_list() if "error" in decay_df.columns else None
+            decay_df["error"].to_list()
+            if "error" in decay_df.columns
+            else None
         )
         maldi_psf = MaldiPSFGenerator(
             laser_diameter_um=float(parameters_form.value["laser_diameter"]),
@@ -133,7 +135,6 @@ def _(parameters_form):
         mo.output.append(mo.callout("Ok!", kind="success"))
     except (ValueError, TypeError) as e:
         mo.output.append(mo.callout(str(e), kind="danger"))
-
     return maldi_psf, maldi_psf_ds
 
 
@@ -232,10 +233,11 @@ def _(maldi_psf_ds):
             hover_tooltips=["val"],
         )
 
-        _lbl = da.round(2).hvplot.labels(x="X_KERNEL", y="Y_KERNEL", hover=False)
+        _lbl = da.round(2).hvplot.labels(
+            x="X_KERNEL", y="Y_KERNEL", hover=False
+        )
 
         _plots.append(_img * _lbl)
-
 
     image_comparison_layout(
         _plots,
@@ -255,6 +257,7 @@ def _():
         selection_mode="all",
         filetypes=DATAARRAY_EXTENSIONS,
         initial_path="data",
+        restrict_navigation=False,
     )
     mo.vstack(
         [
@@ -354,13 +357,16 @@ def _(export_button, input, maldi_psf, result_xr):
         title="Saving...", subtitle="This should take 1-2 minutes"
     ) as _spinner:
         out_dir = input.parent.parent / (
-            "deconvolved_" + datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            "deconvolved_"
+            + datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         )
         out_dir.mkdir(exist_ok=True, parents=True)
 
         # Base output name: the input store's name minus the suffixes the
         # extract notebook appended (e.g. "X.imzml_original.ome.zarr" -> "X.imzml").
-        _base_name = input.name.removesuffix(".ome.zarr").removesuffix("_original")
+        _base_name = input.name.removesuffix(".ome.zarr").removesuffix(
+            "_original"
+        )
 
         # Only the (tiny) constructor params + coarse kernels are persisted
         # -- MaldiPSFGenerator.save (see its docstring) skips the fine-grid

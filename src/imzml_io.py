@@ -37,6 +37,7 @@ def read_imzml_to_xarray(
     filepath: str | Path,
     m_z_values: list[float],
     tolerance: float = 0.005,
+    pixel_size: tuple[float, float] | None = None,
 ) -> xr.DataArray:
     """Extract ion images from an imzML file via bioio-imzml.
 
@@ -49,6 +50,10 @@ def read_imzml_to_xarray(
     tolerance:
         Absolute matching window in Da around each target
         (bioio-imzml's ``mz_tolerance_absolute``).
+    pixel_size:
+        ``(y, x)`` pixel size in micrometers, used only as a fallback when
+        the imzML file carries no pixel-size metadata. Ignored when the
+        file provides its own.
 
     Returns
     -------
@@ -61,10 +66,12 @@ def read_imzml_to_xarray(
         mz=m_z_values,
         mz_tolerance_absolute=tolerance,
     )
-    return bioimage_to_dataarray(img, lazy=False)
+    return bioimage_to_dataarray(img, lazy=False, pixel_size=pixel_size)
 
 
-def bioimage_to_dataarray(img: BioImage, lazy: bool = True) -> xr.DataArray:
+def bioimage_to_dataarray(
+    img: BioImage, lazy: bool = True, pixel_size: tuple[float, float] | None = None
+) -> xr.DataArray:
     """Convert a ``BioImage`` into this project's MSI DataArray convention.
 
     The OME channel axis becomes ``M_Z``, with float coords parsed from
@@ -80,6 +87,10 @@ def bioimage_to_dataarray(img: BioImage, lazy: bool = True) -> xr.DataArray:
         `.chunk()`-ing for dask-parallel processing.
         False -- read eagerly (``img.xarray_data``), preferable when the
         array will be sliced/indexed repeatedly afterward.
+    pixel_size:
+        ``(y, x)`` micrometers, used for the Y/X coords only when
+        ``img.physical_pixel_sizes`` has no X/Y (some imzML files omit it);
+        a ``ValueError`` is raised if it is missing and none is given.
     """
     arr = img.xarray_dask_data if lazy else img.xarray_data
 
@@ -96,11 +107,20 @@ def bioimage_to_dataarray(img: BioImage, lazy: bool = True) -> xr.DataArray:
         arr = arr.assign_coords(ITERATION=np.arange(arr.sizes["ITERATION"]))
 
     pixel_sizes_ = img.physical_pixel_sizes
+    if pixel_sizes_.Y is None or pixel_sizes_.X is None:
+        if pixel_size is None:
+            raise ValueError(
+                f"{img.reader} provides no physical pixel size; pass "
+                "pixel_size=(y, x) in micrometers"
+            )
+        pixel_size_y, pixel_size_x = pixel_size
+    else:
+        pixel_size_y, pixel_size_x = pixel_sizes_.Y, pixel_sizes_.X
     arr = arr.rename({"C": "M_Z"})
     arr = arr.assign_coords(
         M_Z=_mz_from_channel_names(img.channel_names),
-        Y=np.arange(arr.sizes["Y"]) * float(pixel_sizes_.Y or 1.0),
-        X=np.arange(arr.sizes["X"]) * float(pixel_sizes_.X or 1.0),
+        Y=np.arange(arr.sizes["Y"]) * float(pixel_size_y),
+        X=np.arange(arr.sizes["X"]) * float(pixel_size_x),
     )
 
     # BioImage stashes the reader's raw metadata blobs in attrs; this

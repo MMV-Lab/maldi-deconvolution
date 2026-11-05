@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.16"
+__generated_with = "0.24.0"
 app = marimo.App(width="full")
 
 with app.setup:
@@ -47,7 +47,7 @@ def _():
 @app.cell
 def _():
     widget_selected_file = mo.ui.file_browser(
-        filetypes=DATAARRAY_EXTENSIONS, selection_mode="all", multiple=False,
+        filetypes=DATAARRAY_EXTENSIONS, selection_mode="all", multiple=False, restrict_navigation=False
     )
     mo.vstack(
         [

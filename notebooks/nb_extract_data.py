@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.16"
+__generated_with = "0.25.2"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -24,6 +24,8 @@ with app.setup:
         save_dataarray,
     )
 
+    from bioio_imzml import auto_pick_peaks
+
 
 @app.cell
 def _():
@@ -44,7 +46,7 @@ def _():
 @app.cell
 def _():
     widget_selected_file = mo.ui.file_browser(
-        filetypes=[".imzml"], multiple=False
+        filetypes=[".imzml"], multiple=False, restrict_navigation=False
     )
     mo.vstack([mo.md("# Select `imzml` file"), widget_selected_file])
     return (widget_selected_file,)
@@ -70,6 +72,21 @@ def _(is_script_mode, widget_selected_file):
             ).callout(kind="success")
         )
     return (filepath,)
+
+
+@app.cell
+def _():
+    # peaks = auto_pick_peaks(
+    #     filepath,
+    #     min_mz=350.0,
+    #     max_mz=1200.0,
+    #     bin_width=0.002,
+    #     mz_tolerance_absolute=0.005,
+    #     mz_tolerance_relative=3e-6,
+    #     min_separation_absolute=0.005 * 1.5,
+    #     min_relative_intensity=0.005,
+    # )
+    return
 
 
 @app.cell
@@ -156,6 +173,35 @@ def _():
 
 
 @app.cell
+def _(filepath):
+    from bioio import BioImage
+
+    _pps = BioImage(filepath).physical_pixel_sizes if filepath else None
+    pixel_size_missing = _pps is not None and (
+        _pps.X is None or _pps.Y is None
+    )
+    return (pixel_size_missing,)
+
+
+@app.cell
+def _(pixel_size_missing):
+    pixel_size_input = mo.ui.text(
+        label="Pixel size (µm)", placeholder="e.g. 10"
+    )
+
+    mo.vstack(
+        [
+            mo.md(
+                "**No pixel size found in the imzML metadata.** "
+                "Enter it below (µm; square pixels assumed)."
+            ).callout(kind="warn"),
+            pixel_size_input,
+        ]
+    ) if pixel_size_missing else None
+    return (pixel_size_input,)
+
+
+@app.cell
 def _(filepath, widget_csv_upload, widget_use_folder_csv):
     mz_list_from_csv = None
     mz_csv_source = None
@@ -200,7 +246,9 @@ def _(filepath, widget_csv_upload, widget_use_folder_csv):
 
     if len(widget_csv_upload.value) == 1:
         try:
-            mz_list_from_csv = parse_mz_csv(widget_csv_upload.value[0].contents)
+            mz_list_from_csv = parse_mz_csv(
+                widget_csv_upload.value[0].contents
+            )
             mz_csv_source = widget_csv_upload.value[0].name
 
         except Exception as e:
@@ -267,16 +315,27 @@ def _(
 
 
 @app.cell
-def _(filepath, m_z_values, tolerance):
+def _(filepath, m_z_values, pixel_size_input, pixel_size_missing, tolerance):
     mo.stop(
         not m_z_values,
         mo.md("**Waiting for valid m/z input...**").callout(kind="warn"),
     )
 
+    _pixel_size = None
+    if pixel_size_missing:
+        mo.stop(
+            not pixel_size_input.value.strip(),
+            mo.md("**Enter the pixel size (µm) above.**").callout(kind="warn"),
+        )
+        _v = float(pixel_size_input.value)
+        _pixel_size = (_v, _v)
+
     with mo.status.spinner(
         title="Loading...", subtitle="This will take 1-2 minutes"
     ):
-        ion_image_xr = read_imzml_to_xarray(filepath, m_z_values, tolerance)
+        ion_image_xr = read_imzml_to_xarray(
+            filepath, m_z_values, tolerance, pixel_size=_pixel_size
+        )
 
     show_export_button = True
 

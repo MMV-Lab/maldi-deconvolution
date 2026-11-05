@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.16"
+__generated_with = "0.25.2"
 app = marimo.App(width="full")
 
 with app.setup:
@@ -67,6 +67,7 @@ with app.setup:
         pixel_sizes,
         save_dataarray,
     )
+
     hv.extension("bokeh")
 
 
@@ -76,11 +77,13 @@ def _():
         multiple=False,
         selection_mode="file",
         filetypes=[".tif"],
+        restrict_navigation=False,
     )
     maldi_select_widget = mo.ui.file_browser(
         multiple=False,
         selection_mode="all",
         filetypes=DATAARRAY_EXTENSIONS,
+        restrict_navigation=False,
     )
 
     mo.hstack(
@@ -135,8 +138,17 @@ def _(maldi_select_widget, ref_select_widget):
     deconv_image_path = maldi_select_widget.value[0].path
     deconv_image = load_dataarray(deconv_image_path, lazy=False)
 
-    _mz = deconv_image.M_Z.values.tolist()
-    _iter = deconv_image.ITERATION.values.tolist()
+    _mz = (
+        deconv_image.M_Z.values.tolist()
+        if "M_Z" in deconv_image.coords or "M_Z" in deconv_image.dims
+        else []
+    )
+
+    # Safely check if ITERATION exists in the DataArray
+    _has_iterations = (
+        "ITERATION" in deconv_image.coords or "ITERATION" in deconv_image.dims
+    )
+    _iter = deconv_image.ITERATION.values.tolist() if _has_iterations else []
 
     # Modality detection
     REF_image_raw = REF_image.xarray_data.squeeze(drop=True)
@@ -157,19 +169,27 @@ def _(maldi_select_widget, ref_select_widget):
     MALDI_m_z_registration_widget = mo.ui.multiselect(
         _mz, max_selections=1, label="m/z:"
     )
-    MALDI_iteration_registration_widget = mo.ui.multiselect(
-        _iter,
-        max_selections=1,
-        label="iteration:",
-        value=["6"],
-    )
-
     MALDI_m_z_transform_widget = mo.ui.multiselect(_mz, label="m/z:")
-    MALDI_iteration_transform_widget = mo.ui.multiselect(
-        _iter,
-        label="iteration:",
-        value=["0"],
-    )
+
+    # Conditionally construct iteration widgets
+    if _has_iterations and _iter:
+        _default_reg_iter = (
+            [str(_iter[0])] if "6" not in map(str, _iter) else ["6"]
+        )
+        MALDI_iteration_registration_widget = mo.ui.multiselect(
+            _iter,
+            max_selections=1,
+            label="iteration:",
+            value=_default_reg_iter,
+        )
+        MALDI_iteration_transform_widget = mo.ui.multiselect(
+            _iter,
+            label="iteration:",
+            value=[str(_iter[0])],
+        )
+    else:
+        MALDI_iteration_registration_widget = None
+        MALDI_iteration_transform_widget = None
 
     # Build UI elements conditionally
     _ref_ui_elements = [
@@ -185,25 +205,55 @@ def _(maldi_select_widget, ref_select_widget):
     elif is_rgb:
         _ref_ui_elements.append(mo.md("**Detected: RGB/H&E image**"))
 
+    # Build MALDI UI elements conditionally
+    _maldi_ui_elements = [
+        mo.md(
+            "Select the values of m/z"
+            + (" and iteration" if _has_iterations else "")
+            + " used **during registration**"
+        ),
+        MALDI_m_z_registration_widget,
+    ]
+    if MALDI_iteration_registration_widget is not None:
+        _maldi_ui_elements.append(MALDI_iteration_registration_widget)
+
+    _maldi_ui_elements.extend(
+        [
+            mo.md(
+                "Select the values you also want to transform **after registration**"
+            ),
+            MALDI_m_z_transform_widget,
+        ]
+    )
+    if MALDI_iteration_transform_widget is not None:
+        _maldi_ui_elements.append(MALDI_iteration_transform_widget)
+
     mo.hstack(
         [
             mo.vstack(_ref_ui_elements),
-            mo.vstack(
-                [
-                    mo.md(
-                        f"""Select the values of m/z and iteration used **during registration**"""
-                    ),
-                    MALDI_m_z_registration_widget,
-                    MALDI_iteration_registration_widget,
-                    mo.md(
-                        "Select the values you also want to transform **after registration**"
-                    ),
-                    MALDI_m_z_transform_widget,
-                    MALDI_iteration_transform_widget,
-                ]
-            ),
+            mo.vstack(_maldi_ui_elements),
         ]
     )
+
+    # mo.hstack(
+    #     [
+    #         mo.vstack(_ref_ui_elements),
+    #         mo.vstack(
+    #             [
+    #                 mo.md(
+    #                     f"""Select the values of m/z and iteration used **during registration**"""
+    #                 ),
+    #                 MALDI_m_z_registration_widget,
+    #                 MALDI_iteration_registration_widget,
+    #                 mo.md(
+    #                     "Select the values you also want to transform **after registration**"
+    #                 ),
+    #                 MALDI_m_z_transform_widget,
+    #                 MALDI_iteration_transform_widget,
+    #             ]
+    #         ),
+    #     ]
+    # )
     return (
         MALDI_iteration_registration_widget,
         MALDI_iteration_transform_widget,
@@ -231,7 +281,9 @@ def _(
 
     REF_image_xr = REF_image_raw.copy()
 
-    REF_image_xr = REF_image_xr.astype(REF_image_raw.dtype.newbyteorder("<"), casting="equiv")
+    REF_image_xr = REF_image_xr.astype(
+        REF_image_raw.dtype.newbyteorder("<"), casting="equiv"
+    )
 
     # Process based on modality
     if is_fluorescence:
@@ -295,19 +347,48 @@ def _(
     MALDI_m_z_transform_widget,
     deconv_image,
 ):
-    # Extract values from widgets
-    MALDI_iteration_registration = MALDI_iteration_registration_widget.value[0]
-    MALDI_m_z_registration = MALDI_m_z_registration_widget.value[0]
-
-    MALDI_iterations_transform = MALDI_iteration_transform_widget.value
-    MALDI_m_z_transform = MALDI_m_z_transform_widget.value
-
-    # Create xarray for registration (used during landmark-based registration)
-    MALDI_image_registration_xr = deconv_image.sel(
-        ITERATION=MALDI_iteration_registration,
-        M_Z=MALDI_m_z_registration,
+    # Extract m/z values safely
+    MALDI_m_z_registration = (
+        MALDI_m_z_registration_widget.value[0]
+        if MALDI_m_z_registration_widget.value
+        else None
+    )
+    MALDI_m_z_transform = (
+        MALDI_m_z_transform_widget.value
+        if MALDI_m_z_transform_widget.value
+        else []
     )
 
+    # Build selection dictionary dynamically based on whether ITERATION exists
+    sel_kwargs = {}
+
+    if MALDI_m_z_registration is not None:
+        sel_kwargs["M_Z"] = MALDI_m_z_registration
+
+    # Extract iteration values conditionally if the widget exists
+    if (
+        MALDI_iteration_registration_widget is not None
+        and MALDI_iteration_registration_widget.value
+    ):
+        MALDI_iteration_registration = (
+            MALDI_iteration_registration_widget.value[0]
+        )
+        MALDI_iterations_transform = (
+            MALDI_iteration_transform_widget.value
+            if MALDI_iteration_transform_widget
+            else []
+        )
+        sel_kwargs["ITERATION"] = MALDI_iteration_registration
+    else:
+        MALDI_iteration_registration = None
+        MALDI_iterations_transform = []
+
+    # Select data in xarray using unpacking
+    MALDI_image_registration_xr = (
+        deconv_image.sel(**sel_kwargs) if sel_kwargs else deconv_image
+    )
+
+    # Plot the selected image
     MALDI_image_registration_xr.hvplot.image(
         x="X",
         y="Y",
@@ -392,8 +473,7 @@ def _():
 def _(MALDI_image_registration_xr, REF_image_xr, is_rgb):
     hv.extension("bokeh")
 
-    _vmax = float(MALDI_image_registration_xr.quantile(0.98))
-
+    _vmax = float(MALDI_image_registration_xr.quantile(0.999))
 
     # Invisible-until-drawn Points elements — required by PointDraw as Bokeh renderer source
     _REF_pts = hv.Points([]).opts(
@@ -663,61 +743,61 @@ def _():
 
 
 @app.cell
-def _(MALDI_lm_stream, REF_lm_stream):
-    # # HOECHST DATASET 
+def _():
+    # # HOECHST DATASET
 
-    REF_lm_stream.event(
-        data={
-            "x": [
-                407.15012687894193,
-                394.18618225235554,
-                385.2455307857443,
-                463.92326369192364,
-                458.55887281195686,
-                536.3425405714752,
-                540.8128663047809,
-                386.9294737552241,
-            ],
-            "y": [
-                526.4979367633516,
-                526.9589391045988,
-                533.4129718820589,
-                467.4896370837171,
-                505.75283140723013,
-                361.45909859687384,
-                327.8059276858323,
-                438.19590710521726,
-            ],
-        }
-    )
-    MALDI_lm_stream.event(
-        data={
-            "x": [
-                158.1707695265411,
-                148.80166373093067,
-                143.40733009103377,
-                215.2371411907137,
-                214.10149200336696,
-                288.77042607141345,
-                291.8934613366169,
-                143.0760541616171,
-            ],
-            "y": [
-                296.7245176129544,
-                298.18844039351853,
-                304.04413151577506,
-                236.7036836098251,
-                267.153277445559,
-                126.32390595528994,
-                98.80215768068432,
-                205.52454928440082,
-            ],
-        }
-    )
+    # REF_lm_stream.event(
+    #     data={
+    #         "x": [
+    #             407.15012687894193,
+    #             394.18618225235554,
+    #             385.2455307857443,
+    #             463.92326369192364,
+    #             458.55887281195686,
+    #             536.3425405714752,
+    #             540.8128663047809,
+    #             386.9294737552241,
+    #         ],
+    #         "y": [
+    #             526.4979367633516,
+    #             526.9589391045988,
+    #             533.4129718820589,
+    #             467.4896370837171,
+    #             505.75283140723013,
+    #             361.45909859687384,
+    #             327.8059276858323,
+    #             438.19590710521726,
+    #         ],
+    #     }
+    # )
+    # MALDI_lm_stream.event(
+    #     data={
+    #         "x": [
+    #             158.1707695265411,
+    #             148.80166373093067,
+    #             143.40733009103377,
+    #             215.2371411907137,
+    #             214.10149200336696,
+    #             288.77042607141345,
+    #             291.8934613366169,
+    #             143.0760541616171,
+    #         ],
+    #         "y": [
+    #             296.7245176129544,
+    #             298.18844039351853,
+    #             304.04413151577506,
+    #             236.7036836098251,
+    #             267.153277445559,
+    #             126.32390595528994,
+    #             98.80215768068432,
+    #             205.52454928440082,
+    #         ],
+    #     }
+    # )
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _():
     # A375 - CC296
 
@@ -830,7 +910,7 @@ def _():
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _():
     ## H9c2 - CC307-1
 
@@ -889,7 +969,97 @@ def _():
 
 @app.cell
 def _(MALDI_lm_stream, REF_lm_stream):
+    ## SPLEEN
+
+    REF_lm_stream.event(
+        data={
+            "x": [
+                962.9552329717108,
+                951.0620770935868,
+                937.4390187316632,
+                953.9813091882694,
+                978.4163281892935,
+                431.9839579492694,
+                431.85072005544,
+                471.9559461874642,
+            ],
+            "y": [
+                571.6073971407328,
+                582.9158381048762,
+                575.8620621572151,
+                604.0771830323289,
+                596.015722365792,
+                928.9093749286803,
+                942.9831864284758,
+                948.5023298443848,
+            ],
+        }
+    )
+
+    MALDI_lm_stream.event(
+        data={
+            "x": [
+                671.9476441849744,
+                660.9007277971853,
+                646.4016697916253,
+                663.5473866774462,
+                685.1809210276892,
+                141.3363648714058,
+                140.89851109458073,
+                183.37102897475165,
+            ],
+            "y": [
+                55.508223374836625,
+                65.04138260662683,
+                58.12983852696728,
+                90.54258536997142,
+                79.81778123420744,
+                396.5180647893129,
+                409.66762584045597,
+                419.64313582729005,
+            ],
+        }
+    )
+    return
+
+
+@app.cell
+def _(MALDI_lm_stream, REF_lm_stream):
     (REF_lm_stream.data, MALDI_lm_stream.data)
+    return
+
+
+@app.cell
+def _():
+    # import json
+
+    # _data = [
+    #     {k: np.asarray(v).tolist() for k, v in s.data.items()}
+    #     for s in (REF_lm_stream, MALDI_lm_stream)
+    # ]
+    # _data
+
+    # with open(deconv_image_path / "landmark_streams.json", "w") as _f:
+    #     json.dump(_data, _f, indent=2)
+    return
+
+
+@app.cell
+def _():
+    # with open(deconv_image_path / "landmark_streams_bck2.json", "r") as _f:
+
+    #     _data = json.load(_f)
+
+    # _data = [
+    #     {k: np.asarray(v) for k, v in d.items()}
+    #     for d in _data
+    # ]
+
+    # print(_data)
+
+    # for s, d in zip((REF_lm_stream, MALDI_lm_stream), _data):
+    #     s.data.clear()
+    #     s.data.update(d)
     return
 
 
@@ -965,12 +1135,32 @@ def _(
 
 
 @app.cell
+def _():
+    delete_registration_file = mo.ui.run_button(
+        label="Remove previous registration file"
+    )
+    delete_registration_file
+    return (delete_registration_file,)
+
+
+@app.cell
+def _(deconv_image_path, delete_registration_file):
+    mo.stop(not delete_registration_file.value)
+
+    _trasform_file = deconv_image_path.parent / "transorm.tfm"
+
+    if _trasform_file.is_file():
+        _trasform_file.unlink()
+        mo.output.append(mo.md("""deleted""").callout(kind="success"))
+    return
+
+
+@app.cell
 def _(
     MALDI_sitk,
     REF_sitk,
     deconv_image_path,
     fixed_landmarks,
-    is_rgb,
     moving_landmarks,
 ):
     _trasform_file = deconv_image_path.parent / "transorm.tfm"
@@ -986,7 +1176,6 @@ def _(
             MALDI_sitk,
             fixed_landmarks,
             moving_landmarks,
-            is_multimodal=is_rgb,
         )
 
         mo.output.append(
@@ -1011,7 +1200,6 @@ def _(
     REF_sitk,
     deconv_image_path,
 ):
-    # Use the transform widget values instead of hardcoded values
     _deconv_image = load_dataarray(deconv_image_path, lazy=False)
 
     def register_MALDI(MALDI_raw):
@@ -1021,41 +1209,75 @@ def _(
 
     _n_mz = len(MALDI_m_z_transform)
     _n_iter = len(MALDI_iterations_transform)
+    _has_iterations = (
+        "ITERATION" in _deconv_image.dims
+        or "ITERATION" in _deconv_image.coords
+    )
 
-    if _n_mz > 0 and _n_iter > 0:
-        # Get Y, X dimensions from first registration
-        _first_maldi = _deconv_image.sel(
-            ITERATION=MALDI_iterations_transform[0], M_Z=MALDI_m_z_transform[0]
-        )
-        _first_registered = register_MALDI(_first_maldi)
-        _y_size, _x_size = _first_registered.shape
+    # Execute transformation if m/z items are selected (and iteration items exist if applicable)
+    if _n_mz > 0 and (not _has_iterations or _n_iter > 0):
+        if _has_iterations:
+            # Branch 1: 4D array processing (M_Z, ITERATION, Y, X)
+            _first_sel = {
+                "ITERATION": MALDI_iterations_transform[0],
+                "M_Z": MALDI_m_z_transform[0],
+            }
+            _first_maldi = _deconv_image.sel(**_first_sel)
+            _first_registered = register_MALDI(_first_maldi)
+            _y_size, _x_size = _first_registered.shape
 
-        # Preallocate 4D array
-        _all_arrays = np.zeros(
-            (_n_mz, _n_iter, _y_size, _x_size), dtype=np.float32
-        )
+            # Preallocate 4D array
+            _all_arrays = np.zeros(
+                (_n_mz, _n_iter, _y_size, _x_size), dtype=np.float32
+            )
 
-        # Fill array with registered data
-        for i_mz, _mz in enumerate(MALDI_m_z_transform):
-            for i_iter, _iter in enumerate(MALDI_iterations_transform):
-                if i_mz == 0 and i_iter == 0:
-                    # We already registered the first one
-                    _all_arrays[i_mz, i_iter, :, :] = _first_registered
+            for i_mz, _mz in enumerate(MALDI_m_z_transform):
+                for i_iter, _iter in enumerate(MALDI_iterations_transform):
+                    if i_mz == 0 and i_iter == 0:
+                        _all_arrays[i_mz, i_iter, :, :] = _first_registered
+                    else:
+                        _MALDI_raw = _deconv_image.sel(
+                            ITERATION=_iter, M_Z=_mz
+                        )
+                        _registered_arr = register_MALDI(_MALDI_raw)
+                        _all_arrays[i_mz, i_iter, :, :] = _registered_arr
+
+            MALDI_image_transformed_xr = xr.DataArray(
+                _all_arrays,
+                dims=["M_Z", "ITERATION", "Y", "X"],
+                coords={
+                    "M_Z": MALDI_m_z_transform,
+                    "ITERATION": MALDI_iterations_transform,
+                    "Y": REF_image_xr.coords["Y"],
+                    "X": REF_image_xr.coords["X"],
+                },
+            )
+        else:
+            # Branch 2: 3D array processing (M_Z, Y, X) when no ITERATION dimension exists
+            _first_maldi = _deconv_image.sel(M_Z=MALDI_m_z_transform[0])
+            _first_registered = register_MALDI(_first_maldi)
+            _y_size, _x_size = _first_registered.shape
+
+            # Preallocate 3D array
+            _all_arrays = np.zeros((_n_mz, _y_size, _x_size), dtype=np.float32)
+
+            for i_mz, _mz in enumerate(MALDI_m_z_transform):
+                if i_mz == 0:
+                    _all_arrays[i_mz, :, :] = _first_registered
                 else:
-                    _MALDI_raw = _deconv_image.sel(ITERATION=_iter, M_Z=_mz)
+                    _MALDI_raw = _deconv_image.sel(M_Z=_mz)
                     _registered_arr = register_MALDI(_MALDI_raw)
-                    _all_arrays[i_mz, i_iter, :, :] = _registered_arr
+                    _all_arrays[i_mz, :, :] = _registered_arr
 
-        MALDI_image_transformed_xr = xr.DataArray(
-            _all_arrays,
-            dims=["M_Z", "ITERATION", "Y", "X"],
-            coords={
-                "M_Z": MALDI_m_z_transform,
-                "ITERATION": MALDI_iterations_transform,
-                "Y": REF_image_xr.coords["Y"],
-                "X": REF_image_xr.coords["X"],
-            },
-        )
+            MALDI_image_transformed_xr = xr.DataArray(
+                _all_arrays,
+                dims=["M_Z", "Y", "X"],
+                coords={
+                    "M_Z": MALDI_m_z_transform,
+                    "Y": REF_image_xr.coords["Y"],
+                    "X": REF_image_xr.coords["X"],
+                },
+            )
     else:
         MALDI_image_transformed_xr = None
 
@@ -1099,29 +1321,41 @@ def _(
             / f"{deconv_image_path.name}_deconvolved_registered_m_z-{MALDI_m_z_registration}.ome.zarr",
         )
 
-        _output = REF_image_raw.copy()
+        REF_image_transformed_xr_full_channels = REF_image_raw.copy()
 
-        _output.attrs.clear()
+        REF_image_transformed_xr_full_channels.attrs.clear()
 
-        _output = _output.assign_coords(
-            X=REF_image_xr.X.values, Y=REF_image_xr.Y.values
+        REF_image_transformed_xr_full_channels = (
+            REF_image_transformed_xr_full_channels.assign_coords(
+                X=REF_image_xr.X.values, Y=REF_image_xr.Y.values
+            )
         )
 
         if is_fluorescence:
-            _output = _output.rename({"C": "M_Z"})
+            REF_image_transformed_xr_full_channels = (
+                REF_image_transformed_xr_full_channels.rename({"C": "M_Z"})
+            )
         if is_rgb:
-            _output = _output.rename({"S": "M_Z"})
+            REF_image_transformed_xr_full_channels = (
+                REF_image_transformed_xr_full_channels.rename({"S": "M_Z"})
+            )
 
-        _output = _output.assign_coords(M_Z=np.arange(len(_output.M_Z)))
+        REF_image_transformed_xr_full_channels = (
+            REF_image_transformed_xr_full_channels.assign_coords(
+                M_Z=np.arange(len(REF_image_transformed_xr_full_channels.M_Z))
+            )
+        )
 
-        _output = _output.sel(X=x_slice, Y=y_slice)
+        REF_image_transformed_xr_full_channels = (
+            REF_image_transformed_xr_full_channels.sel(X=x_slice, Y=y_slice)
+        )
 
         save_dataarray(
-            _output,
+            REF_image_transformed_xr_full_channels,
             deconv_image_path.parent
             / f"{deconv_image_path.name}_REFERENCE_registered.ome.zarr",
         )
-    return
+    return (REF_image_transformed_xr_full_channels,)
 
 
 @app.cell
@@ -1149,8 +1383,9 @@ def _(
         # Fallback to first m/z if registration m/z not in transform selection
         _MALDI_for_overlay = MALDI_image_transformed_xr.isel(M_Z=0)
 
-    # Select last iteration to show final deconvolved result
-    _MALDI_for_overlay = _MALDI_for_overlay.isel(ITERATION=-1)
+    # Select last iteration to show final deconvolved result if ITERATION dimension exists
+    if "ITERATION" in _MALDI_for_overlay.dims:
+        _MALDI_for_overlay = _MALDI_for_overlay.isel(ITERATION=-1)
 
     _vmax = float(_MALDI_for_overlay.quantile(0.99))
 
@@ -1253,7 +1488,103 @@ def _(
 
 
 @app.cell
-def _(REF_image_transformed_xr, REF_image_xr, is_rgb):
+def _():
+    continue_analysis = mo.ui.run_button(
+        label="Continue with post-registration analysis"
+    )
+    mo.vstack(
+        [
+            mo.md(
+                "**Execution stops here.** Click to run the evaluation cells below."
+            ),
+            continue_analysis,
+        ]
+    )
+    return (continue_analysis,)
+
+
+@app.cell
+def _(
+    MALDI_image_transformed_xr,
+    REF_image_transformed_xr_full_channels,
+    continue_analysis,
+):
+    mo.stop(not continue_analysis.value)
+
+    _ref_channels = len(REF_image_transformed_xr_full_channels.M_Z)
+    _ref_matrix = REF_image_transformed_xr_full_channels.data.reshape(
+        _ref_channels, -1
+    )
+
+    _maldi_matrix = MALDI_image_transformed_xr.data.reshape(
+        MALDI_image_transformed_xr.shape[0], -1
+    )
+
+    # 2. Mean-center along spatial pixels for Pearson correlation
+    _ref_centered = _ref_matrix - np.mean(_ref_matrix, axis=1, keepdims=True)
+    _maldi_centered = _maldi_matrix - np.mean(
+        _maldi_matrix, axis=1, keepdims=True
+    )
+
+    # 3. Vectorized matrix multiplication to calculate cross-correlation across all pairs
+    # Shape: (190, 3) where entry [i, j] is the dot product of m/z slice i and channel j
+    _numerators = np.dot(_maldi_centered, _ref_centered.T)
+
+    # Standard deviations (magnitudes)
+    _ref_stds = np.sqrt(np.sum(_ref_centered**2, axis=1, keepdims=True)).T
+    _maldi_stds = np.sqrt(np.sum(_maldi_centered**2, axis=1, keepdims=True))
+
+    _denominators = np.dot(_maldi_stds, _ref_stds)
+
+    # Correlation matrix (190, 3)
+    _corr_matrix = np.where(
+        _denominators != 0, _numerators / _denominators, 0.0
+    )
+
+    # 4. Extract spatial intensity stats for context
+    _mean_intensity = np.mean(_maldi_matrix, axis=1)
+    _max_intensity = np.max(_maldi_matrix, axis=1)
+
+    # 5. Extract metadata array coordinates
+    _maldi_mz_coords = MALDI_image_transformed_xr.coords["M_Z"].values
+    _fluo_channel_coords = REF_image_transformed_xr_full_channels.coords[
+        "M_Z"
+    ].values
+
+    # 6. Build dense pairwise Polars DataFrame (190 m/z * 3 channels = 570 rows)
+    df_m_z_correlation = (
+        pl.DataFrame(
+            {
+                "M_Z": np.repeat(_maldi_mz_coords, _ref_channels),
+                "fluo_channel": np.tile(
+                    _fluo_channel_coords, len(_maldi_mz_coords)
+                ),
+                "pearson_corr": _corr_matrix.ravel(),
+                "mean_intensity": np.repeat(_mean_intensity, _ref_channels),
+                "max_intensity": np.repeat(_max_intensity, _ref_channels),
+            }
+        )
+        .sort(["fluo_channel", "pearson_corr"], descending=[False, True])
+        .with_columns(
+            pl.col("pearson_corr")
+            .rank("dense", descending=True)
+            .over("fluo_channel")
+            .alias("rank_per_channel")
+        )
+    )
+    return (df_m_z_correlation,)
+
+
+@app.cell
+def _(df_m_z_correlation):
+    df_m_z_correlation
+    return
+
+
+@app.cell
+def _(REF_image_transformed_xr, REF_image_xr, continue_analysis, is_rgb):
+    mo.stop(not continue_analysis.value)
+
     hv.extension("bokeh")
 
     # 1. Keep your Polygons element as the source of the drawing stream
