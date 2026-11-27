@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.25.2"
+__generated_with = "0.26.0"
 app = marimo.App(width="full")
 
 with app.setup:
@@ -170,6 +170,9 @@ def _(maldi_select_widget, ref_select_widget):
         _mz, max_selections=1, label="m/z:"
     )
     MALDI_m_z_transform_widget = mo.ui.multiselect(_mz, label="m/z:")
+    MALDI_use_tic_widget = mo.ui.checkbox(
+        label="Use pseudo-TIC (sum of all m/z) for registration"
+    )
 
     # Conditionally construct iteration widgets
     if _has_iterations and _iter:
@@ -212,6 +215,7 @@ def _(maldi_select_widget, ref_select_widget):
             + (" and iteration" if _has_iterations else "")
             + " used **during registration**"
         ),
+        MALDI_use_tic_widget,
         MALDI_m_z_registration_widget,
     ]
     if MALDI_iteration_registration_widget is not None:
@@ -259,6 +263,7 @@ def _(maldi_select_widget, ref_select_widget):
         MALDI_iteration_transform_widget,
         MALDI_m_z_registration_widget,
         MALDI_m_z_transform_widget,
+        MALDI_use_tic_widget,
         REF_channel_widget,
         REF_image_raw,
         REF_pixel_size_text,
@@ -345,14 +350,16 @@ def _(
     MALDI_iteration_transform_widget,
     MALDI_m_z_registration_widget,
     MALDI_m_z_transform_widget,
+    MALDI_use_tic_widget,
     deconv_image,
 ):
-    # Extract m/z values safely
-    MALDI_m_z_registration = (
-        MALDI_m_z_registration_widget.value[0]
-        if MALDI_m_z_registration_widget.value
-        else None
-    )
+    # Extract m/z values safely ("TIC" = pseudo-TIC, sum over all m/z)
+    if MALDI_use_tic_widget.value:
+        MALDI_m_z_registration = "TIC"
+    elif MALDI_m_z_registration_widget.value:
+        MALDI_m_z_registration = MALDI_m_z_registration_widget.value[0]
+    else:
+        MALDI_m_z_registration = None
     MALDI_m_z_transform = (
         MALDI_m_z_transform_widget.value
         if MALDI_m_z_transform_widget.value
@@ -362,7 +369,7 @@ def _(
     # Build selection dictionary dynamically based on whether ITERATION exists
     sel_kwargs = {}
 
-    if MALDI_m_z_registration is not None:
+    if MALDI_m_z_registration not in (None, "TIC"):
         sel_kwargs["M_Z"] = MALDI_m_z_registration
 
     # Extract iteration values conditionally if the widget exists
@@ -387,6 +394,10 @@ def _(
     MALDI_image_registration_xr = (
         deconv_image.sel(**sel_kwargs) if sel_kwargs else deconv_image
     )
+    if MALDI_m_z_registration == "TIC":
+        MALDI_image_registration_xr = MALDI_image_registration_xr.sum(
+            "M_Z", keep_attrs=True
+        )
 
     # Plot the selected image
     MALDI_image_registration_xr.hvplot.image(
@@ -968,65 +979,64 @@ def _():
 
 
 @app.cell
-def _(MALDI_lm_stream, REF_lm_stream):
+def _():
     ## SPLEEN
 
-    REF_lm_stream.event(
-        data={
-            "x": [
-                962.9552329717108,
-                951.0620770935868,
-                937.4390187316632,
-                953.9813091882694,
-                978.4163281892935,
-                431.9839579492694,
-                431.85072005544,
-                471.9559461874642,
-            ],
-            "y": [
-                571.6073971407328,
-                582.9158381048762,
-                575.8620621572151,
-                604.0771830323289,
-                596.015722365792,
-                928.9093749286803,
-                942.9831864284758,
-                948.5023298443848,
-            ],
-        }
-    )
+    # REF_lm_stream.event(
+    #     data={
+    #         "x": [
+    #             962.9552329717108,
+    #             951.0620770935868,
+    #             937.4390187316632,
+    #             953.9813091882694,
+    #             978.4163281892935,
+    #             431.9839579492694,
+    #             431.85072005544,
+    #             471.9559461874642,
+    #         ],
+    #         "y": [
+    #             571.6073971407328,
+    #             582.9158381048762,
+    #             575.8620621572151,
+    #             604.0771830323289,
+    #             596.015722365792,
+    #             928.9093749286803,
+    #             942.9831864284758,
+    #             948.5023298443848,
+    #         ],
+    #     }
+    # )
 
-    MALDI_lm_stream.event(
-        data={
-            "x": [
-                671.9476441849744,
-                660.9007277971853,
-                646.4016697916253,
-                663.5473866774462,
-                685.1809210276892,
-                141.3363648714058,
-                140.89851109458073,
-                183.37102897475165,
-            ],
-            "y": [
-                55.508223374836625,
-                65.04138260662683,
-                58.12983852696728,
-                90.54258536997142,
-                79.81778123420744,
-                396.5180647893129,
-                409.66762584045597,
-                419.64313582729005,
-            ],
-        }
-    )
+    # MALDI_lm_stream.event(
+    #     data={
+    #         "x": [
+    #             671.9476441849744,
+    #             660.9007277971853,
+    #             646.4016697916253,
+    #             663.5473866774462,
+    #             685.1809210276892,
+    #             141.3363648714058,
+    #             140.89851109458073,
+    #             183.37102897475165,
+    #         ],
+    #         "y": [
+    #             55.508223374836625,
+    #             65.04138260662683,
+    #             58.12983852696728,
+    #             90.54258536997142,
+    #             79.81778123420744,
+    #             396.5180647893129,
+    #             409.66762584045597,
+    #             419.64313582729005,
+    #         ],
+    #     }
+    # )
     return
 
 
 @app.cell
 def _(MALDI_lm_stream, REF_lm_stream):
     (REF_lm_stream.data, MALDI_lm_stream.data)
-    return
 
 
 @app.cell
@@ -1152,7 +1162,6 @@ def _(deconv_image_path, delete_registration_file):
     if _trasform_file.is_file():
         _trasform_file.unlink()
         mo.output.append(mo.md("""deleted""").callout(kind="success"))
-    return
 
 
 @app.cell
@@ -1194,6 +1203,7 @@ def _(
 @app.cell
 def _(
     MALDI_iterations_transform,
+    MALDI_m_z_registration,
     MALDI_m_z_transform,
     REF_MALDI_transform,
     REF_image_xr,
@@ -1294,7 +1304,26 @@ def _(
         MALDI_image_transformed_xr = MALDI_image_transformed_xr.sel(
             Y=y_slice, X=x_slice
         )
+
+    # Pseudo-TIC (sum of all m/z) of the last selected iteration, registered
+    # and cropped like the rest, so the overlay can show the channel used
+    # during registration
+    MALDI_TIC_transformed_xr = None
+    if MALDI_m_z_registration == "TIC" and MALDI_image_transformed_xr is not None:
+        _tic = _deconv_image.sum("M_Z")
+        if _has_iterations:
+            _tic = _tic.sel(ITERATION=MALDI_iterations_transform[-1])
+        MALDI_TIC_transformed_xr = xr.DataArray(
+            register_MALDI(_tic),
+            dims=["Y", "X"],
+            coords={
+                "Y": REF_image_xr.coords["Y"],
+                "X": REF_image_xr.coords["X"],
+            },
+            name="TIC",
+        ).sel(Y=y_slice, X=x_slice)
     return (
+        MALDI_TIC_transformed_xr,
         MALDI_image_transformed_xr,
         REF_image_transformed_xr,
         x_slice,
@@ -1366,6 +1395,7 @@ def _():
 
 @app.cell
 def _(
+    MALDI_TIC_transformed_xr,
     MALDI_image_transformed_xr,
     MALDI_m_z_registration,
     REF_image_transformed_xr,
@@ -1375,7 +1405,10 @@ def _(
 
     cmap_dict = build_colormap_dict(colormap_names=[])
 
-    if MALDI_m_z_registration in MALDI_image_transformed_xr.M_Z.values:
+    if MALDI_TIC_transformed_xr is not None:
+        # Registration used the pseudo-TIC: show it
+        _MALDI_for_overlay = MALDI_TIC_transformed_xr
+    elif MALDI_m_z_registration in MALDI_image_transformed_xr.M_Z.values:
         _MALDI_for_overlay = MALDI_image_transformed_xr.sel(
             M_Z=MALDI_m_z_registration
         )
@@ -1484,7 +1517,6 @@ def _(
             title="Registration result: Cropped Reference + MALDI overlay (final iteration)"
         )
     )
-    return
 
 
 @app.cell
@@ -1578,7 +1610,6 @@ def _(
 @app.cell
 def _(df_m_z_correlation):
     df_m_z_correlation
-    return
 
 
 @app.cell
@@ -1887,7 +1918,6 @@ def _(MALDI_image_transformed_xr, mask_xr):
 def _(pr_plot, roc_plot):
     hv.extension("matplotlib")
     (roc_plot + pr_plot).cols(2)
-    return
 
 
 @app.cell
@@ -2503,7 +2533,6 @@ def _(
         ]
     )
     mo.vstack([_report, _plots])
-    return
 
 
 if __name__ == "__main__":
